@@ -92,9 +92,13 @@ async def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = F
         evoked_target = epochs['Target'].average()
         evoked_nontarget = epochs['Non-Target'].average()
 
-        # 6. PLOT (REPORT STYLE)
-        # Increased height to 24 to give text massive room to breathe
-        fig, ax = plt.subplots(3, 1, figsize=(12, 24))
+        # 6. PLOT (REPORT STYLE - FIXED SPACING)
+        
+        # ### LAYOUT CONTROL: CANVAS HEIGHT ###
+        # figsize=(12, 30):
+        # - 12 is width (standard)
+        # - 30 is HEIGHT. Increase this (e.g., to 35 or 40) if you need more vertical room.
+        fig, ax = plt.subplots(3, 1, figsize=(12, 30))
         
         # --- MAIN HEADER ---
         main_title = "Neuro-UX: B2B Dashboard Analysis"
@@ -109,8 +113,8 @@ async def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = F
         )
         
         # Place Header at absolute top
-        fig.text(0.5, 0.96, main_title, ha='center', fontsize=22, weight='bold', color='#2c3e50')
-        fig.text(0.5, 0.92, textwrap.fill(summary_text, width=100), ha='center', fontsize=12, style='italic', color='#34495e')
+        fig.text(0.5, 0.97, main_title, ha='center', fontsize=24, weight='bold', color='#2c3e50')
+        fig.text(0.5, 0.93, textwrap.fill(summary_text, width=95), ha='center', va='top', fontsize=13, style='italic', color='#34495e')
 
         # Definitions
         sections = [
@@ -150,7 +154,7 @@ async def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = F
                     picks=channel, 
                     axes=ax[i], 
                     show=False, 
-                    show_sensors=False,  # Topomap removed
+                    show_sensors=False, 
                     legend='upper right' if i == 0 else None,
                     title=None
                 )
@@ -158,30 +162,35 @@ async def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = F
                 # Highlight Window
                 ax[i].axvspan(sec["window"][0], sec["window"][1], color=sec["color"], alpha=0.1, label=f"{sec['comp']} Window")
                 
-                # --- CUSTOM TEXT BOXES (Separated) ---
-                # 1. Title (Bold, larger)
-                # We place it well above the graph (y=1.25 in axis coordinates)
-                ax[i].text(0.5, 1.35, sec["title"], 
+                # --- TEXT BOXES (FIXED POSITIONS) ---
+                
+                # ### LAYOUT CONTROL: TITLE POSITION ###
+                # '1.4' means 140% of the graph height. 
+                # Increase to 1.5 or 1.6 to push title HIGHER.
+                ax[i].text(0.5, 1.4, sec["title"], 
                          transform=ax[i].transAxes, 
                          ha='center', va='bottom', 
-                         fontsize=16, weight='bold', color='#2c3e50')
+                         fontsize=18, weight='bold', color='#2c3e50')
                 
-                # 2. Description (Regular)
-                # We place it between title and graph (y=1.15)
-                wrapped_desc = textwrap.fill(sec["desc"], width=90)
-                ax[i].text(0.5, 1.12, wrapped_desc, 
+                # ### LAYOUT CONTROL: DESCRIPTION POSITION ###
+                # '1.15' means 115% of the graph height.
+                # Increase to 1.2 or 1.3 to push description HIGHER.
+                wrapped_desc = textwrap.fill(sec["desc"], width=85)
+                ax[i].text(0.5, 1.15, wrapped_desc, 
                          transform=ax[i].transAxes, 
                          ha='center', va='top', 
-                         fontsize=12, color='#7f8c8d')
+                         fontsize=12, color='#7f8c8d',
+                         bbox=dict(boxstyle="round,pad=0.5", fc="white", ec="#bdc3c7", alpha=0.8))
 
-        # Adjust layout to prevent overlap
-        # 'top=0.88' leaves room for the main header
-        # 'hspace=0.7' pushes the graphs apart to make room for the text boxes
-        plt.subplots_adjust(top=0.88, hspace=0.7, bottom=0.05)
+        # ADJUST LAYOUT
+        # ### LAYOUT CONTROL: VERTICAL SPACING ###
+        # 'hspace=0.8' adds the white gap between graphs. 
+        # Increase to 1.0 or 1.2 if the text is still overlapping the graph above it.
+        plt.subplots_adjust(top=0.88, hspace=0.8, bottom=0.05)
         
         # 7. CONVERT TO IMAGE
         buf = BytesIO()
-        # dpi=150 ensures the text is crisp and readable
+        # dpi=150 ensures crisp text
         plt.savefig(buf, format="png", bbox_inches='tight', dpi=150) 
         plt.close(fig)
         buf.seek(0)
