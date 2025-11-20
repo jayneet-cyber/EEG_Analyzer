@@ -60,7 +60,7 @@ async def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = F
                     if t_type == 'R' and t_lat < 1000:
                         reaction_times.append((t_lat, t_id, t_name))
 
-        # Calculate Easiest/Toughest (Keep this logic for the frontend text)
+        # Frontend Text Logic
         easiest_txt = "N/A"
         toughest_txt = "N/A"
         if reaction_times:
@@ -93,12 +93,13 @@ async def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = F
         evoked_nontarget = epochs['Non-Target'].average()
 
         # 6. PLOT (REPORT STYLE)
-        # We make the figure tall to fit all the text
-        fig, ax = plt.subplots(3, 1, figsize=(10, 20))
+        # Increased height to 24 to give text massive room to breathe
+        fig, ax = plt.subplots(3, 1, figsize=(12, 24))
         
-        # --- MAIN HEADER TEXT ---
-        main_title = "Neuro-UX: B2B Dashboard Analysis (Example of Results)"
+        # --- MAIN HEADER ---
+        main_title = "Neuro-UX: B2B Dashboard Analysis"
         summary_text = (
+            "B2B Dashboard Analysis Summary\n\n"
             "In this experiment, we replace standard images with screenshots of your dashboard (Current vs. New) "
             "to measure how easily users can make decisions. By giving a user a specific management task (e.g., 'Find the Revenue Drop'), "
             "the EEG acts as an unbiased stress test: the P100 shows us if the visual design is too busy, "
@@ -107,11 +108,11 @@ async def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = F
             "This validates your design with hard biological data, not just opinions."
         )
         
-        # Place Title and Summary at the very top
-        fig.text(0.5, 0.96, main_title, ha='center', fontsize=18, weight='bold')
-        fig.text(0.5, 0.91, textwrap.fill(summary_text, width=90), ha='center', fontsize=11, style='italic')
+        # Place Header at absolute top
+        fig.text(0.5, 0.96, main_title, ha='center', fontsize=22, weight='bold', color='#2c3e50')
+        fig.text(0.5, 0.92, textwrap.fill(summary_text, width=100), ha='center', fontsize=12, style='italic', color='#34495e')
 
-        # Definitions for the 3 sections
+        # Definitions
         sections = [
             {
                 "comp": "P100",
@@ -139,42 +140,49 @@ async def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = F
             }
         ]
         
-        # Loop through and plot
         for i, sec in enumerate(sections):
             channel = sec["ch"]
             
             if channel in raw.ch_names:
-                # 1. PLOT GRAPH
+                # Plot Graph
                 mne.viz.plot_compare_evokeds(
                     {'Target': evoked_target, 'Non-Target': evoked_nontarget}, 
                     picks=channel, 
                     axes=ax[i], 
                     show=False, 
-                    show_sensors=False,  # No Topomap
+                    show_sensors=False,  # Topomap removed
                     legend='upper right' if i == 0 else None,
-                    title=None # We handle titles manually below
+                    title=None
                 )
                 
-                # 2. ADD HIGHLIGHT
+                # Highlight Window
                 ax[i].axvspan(sec["window"][0], sec["window"][1], color=sec["color"], alpha=0.1, label=f"{sec['comp']} Window")
                 
-                # 3. ADD CUSTOM TEXT HEADER ABOVE PLOT
-                # We put the Title bold, and description regular below it
-                ax[i].set_title(sec["title"], fontsize=14, weight='bold', pad=25)
+                # --- CUSTOM TEXT BOXES (Separated) ---
+                # 1. Title (Bold, larger)
+                # We place it well above the graph (y=1.25 in axis coordinates)
+                ax[i].text(0.5, 1.35, sec["title"], 
+                         transform=ax[i].transAxes, 
+                         ha='center', va='bottom', 
+                         fontsize=16, weight='bold', color='#2c3e50')
                 
-                # Add description text inside the plot area at the top
-                # wrap text to fit graph width
-                wrapped_desc = textwrap.fill(sec["desc"], width=80)
+                # 2. Description (Regular)
+                # We place it between title and graph (y=1.15)
+                wrapped_desc = textwrap.fill(sec["desc"], width=90)
                 ax[i].text(0.5, 1.12, wrapped_desc, 
                          transform=ax[i].transAxes, 
-                         ha='center', va='bottom', fontsize=10)
+                         ha='center', va='top', 
+                         fontsize=12, color='#7f8c8d')
 
-        # Adjust spacing to make room for all the text
-        plt.subplots_adjust(top=0.85, hspace=0.5)
+        # Adjust layout to prevent overlap
+        # 'top=0.88' leaves room for the main header
+        # 'hspace=0.7' pushes the graphs apart to make room for the text boxes
+        plt.subplots_adjust(top=0.88, hspace=0.7, bottom=0.05)
         
         # 7. CONVERT TO IMAGE
         buf = BytesIO()
-        plt.savefig(buf, format="png", bbox_inches='tight') # bbox_inches='tight' helps keep text from getting cut off
+        # dpi=150 ensures the text is crisp and readable
+        plt.savefig(buf, format="png", bbox_inches='tight', dpi=150) 
         plt.close(fig)
         buf.seek(0)
         img_str = base64.b64encode(buf.read()).decode("utf-8")
