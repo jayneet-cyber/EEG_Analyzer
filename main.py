@@ -7,11 +7,12 @@ import numpy as np
 import tempfile
 import os
 import base64
+import textwrap
 from io import BytesIO
 
 app = FastAPI()
 
-# CRITICAL: Allow Lovable (and everyone else) to talk to this server
+# Allow Lovable to talk to this server
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"], 
@@ -39,48 +40,33 @@ async def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = F
         # 2. LOAD DATA
         raw = mne.io.read_raw_cnt(tmp_cnt_path, preload=True, verbose=False)
         
-        # 3. PARSE EXP & FIND REACTION TIMES
+        # 3. PARSE EXP
         trial_type_map = {}
-        reaction_times = []  # List to store (Latency, TrialID, ImageName)
+        reaction_times = []
         
         with open(tmp_exp_path, 'r') as f:
             lines = f.readlines()
-            for line in lines[8:]: # Skip header
+            for line in lines[8:]: 
                 parts = line.strip().split('\t')
-                # Fallback if tab split fails
                 if len(parts) < 7: parts = line.strip().split()
-                
-                # We need at least 7 columns now to get Latency (Col 6) and Name (Col 1)
                 if len(parts) >= 7:
                     t_id = parts[0].strip()
                     t_name = parts[1].strip()
                     t_type = parts[3].strip()
-                    
-                    # Try to parse latency, default to 1000 if fails
-                    try:
-                        t_lat = int(parts[6].strip())
-                    except:
-                        t_lat = 1000
+                    try: t_lat = int(parts[6].strip())
+                    except: t_lat = 1000
                     
                     trial_type_map[t_id] = t_type
-                    
-                    # LOGIC: "Toughness" is determined by Reaction Time on TARGETS (R)
-                    # We only count it if they actually pressed the button (Latency < 1000)
                     if t_type == 'R' and t_lat < 1000:
                         reaction_times.append((t_lat, t_id, t_name))
 
-        # Calculate Easiest/Toughest based on sorted reaction times
+        # Calculate Easiest/Toughest (Keep this logic for the frontend text)
         easiest_txt = "N/A"
         toughest_txt = "N/A"
-        
         if reaction_times:
-            reaction_times.sort() # Sorts by Latency (first item in tuple)
-            
-            # Easiest = Fastest Time (Smallest Number)
+            reaction_times.sort()
             best = reaction_times[0]
             easiest_txt = f"Trial {best[1]}: '{best[2]}' ({best[0]}ms)"
-            
-            # Toughest = Slowest Time (Largest Number)
             worst = reaction_times[-1]
             toughest_txt = f"Trial {worst[1]}: '{worst[2]}' ({worst[0]}ms)"
 
@@ -106,72 +92,93 @@ async def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = F
         evoked_target = epochs['Target'].average()
         evoked_nontarget = epochs['Non-Target'].average()
 
-        # 6. PLOT
-        fig, ax = plt.subplots(3, 1, figsize=(10, 15))
-        components = {
-            "P100 (Visual Input)": "OZ", 
-            "N200 (Categorization)": "FZ", 
-            "P300 (Decision)": "PZ"
-        }
+        # 6. PLOT (REPORT STYLE)
+        # We make the figure tall to fit all the text
+        fig, ax = plt.subplots(3, 1, figsize=(10, 20))
         
-        for i, (name, ch) in enumerate(components.items()):
-            if ch in raw.ch_names:
-                # Plot the ERP lines
+        # --- MAIN HEADER TEXT ---
+        main_title = "Neuro-UX: B2B Dashboard Analysis (Example of Results)"
+        summary_text = (
+            "In this experiment, we replace standard images with screenshots of your dashboard (Current vs. New) "
+            "to measure how easily users can make decisions. By giving a user a specific management task (e.g., 'Find the Revenue Drop'), "
+            "the EEG acts as an unbiased stress test: the P100 shows us if the visual design is too busy, "
+            "the N200 highlights exactly where users get confused by complex charts, and the P300 proves "
+            "how much faster the new design allows them to spot the answer and act on it. "
+            "This validates your design with hard biological data, not just opinions."
+        )
+        
+        # Place Title and Summary at the very top
+        fig.text(0.5, 0.96, main_title, ha='center', fontsize=18, weight='bold')
+        fig.text(0.5, 0.91, textwrap.fill(summary_text, width=90), ha='center', fontsize=11, style='italic')
+
+        # Definitions for the 3 sections
+        sections = [
+            {
+                "comp": "P100",
+                "ch": "OZ",
+                "title": "A. P100 (The 'First Glance' Test)",
+                "desc": "Measures how physically overwhelming the screen is—telling us if the sheer amount of clutter is tiring the user's eyes before they even start reading.",
+                "window": (0.08, 0.14),
+                "color": "green"
+            },
+            {
+                "comp": "N200",
+                "ch": "FZ",
+                "title": "B. N200 (The 'Confusion' Test)",
+                "desc": "Measures mental friction—revealing the exact moment a user gets stuck or frustrated because they can’t instantly find the insight they need in a wall of numbers.",
+                "window": (0.20, 0.30),
+                "color": "yellow"
+            },
+            {
+                "comp": "P300",
+                "ch": "PZ",
+                "title": "C. P300 (The 'Confidence' Test)",
+                "desc": "Measures the 'Aha!' moment—proving the user has successfully understood the data and is ready to make a confident decision, rather than hesitating.",
+                "window": (0.30, 0.50),
+                "color": "red"
+            }
+        ]
+        
+        # Loop through and plot
+        for i, sec in enumerate(sections):
+            channel = sec["ch"]
+            
+            if channel in raw.ch_names:
+                # 1. PLOT GRAPH
                 mne.viz.plot_compare_evokeds(
                     {'Target': evoked_target, 'Non-Target': evoked_nontarget}, 
-                    picks=ch, 
+                    picks=channel, 
                     axes=ax[i], 
                     show=False, 
-                    show_sensors=False, 
-                    title=name,
-                    legend='upper left' if i == 0 else None
+                    show_sensors=False,  # No Topomap
+                    legend='upper right' if i == 0 else None,
+                    title=None # We handle titles manually below
                 )
                 
-                # --- METRICS CALCULATION ---
-                target_data = evoked_target.get_data(picks=ch)[0]
-                times = evoked_target.times
+                # 2. ADD HIGHLIGHT
+                ax[i].axvspan(sec["window"][0], sec["window"][1], color=sec["color"], alpha=0.1, label=f"{sec['comp']} Window")
                 
-                metric_text = ""
+                # 3. ADD CUSTOM TEXT HEADER ABOVE PLOT
+                # We put the Title bold, and description regular below it
+                ax[i].set_title(sec["title"], fontsize=14, weight='bold', pad=25)
                 
-                if "P300" in name:
-                    # Look for peak between 300ms and 500ms
-                    mask = (times >= 0.3) & (times <= 0.5)
-                    # Highlight Window
-                    ax[i].axvspan(0.30, 0.50, color='red', alpha=0.1, label="P300 Window")
-                    
-                    # Find Max Amplitude and Index
-                    window_data = target_data[mask]
-                    window_times = times[mask]
-                    
-                    if len(window_data) > 0:
-                        peak_amp = np.max(window_data) * 1e6 
-                        peak_lat = window_times[np.argmax(window_data)] * 1000 
-                        metric_text = f"Target Peak: {peak_amp:.2f} µV\nLatency: {peak_lat:.0f} ms"
+                # Add description text inside the plot area at the top
+                # wrap text to fit graph width
+                wrapped_desc = textwrap.fill(sec["desc"], width=80)
+                ax[i].text(0.5, 1.12, wrapped_desc, 
+                         transform=ax[i].transAxes, 
+                         ha='center', va='bottom', fontsize=10)
 
-                elif "P100" in name:
-                    ax[i].axvspan(0.08, 0.14, color='green', alpha=0.1)
-                elif "N200" in name:
-                    ax[i].axvspan(0.20, 0.30, color='yellow', alpha=0.1)
-
-                # Add Text Box to Plot
-                if metric_text:
-                    ax[i].text(0.95, 0.05, metric_text, 
-                             transform=ax[i].transAxes, 
-                             fontsize=12, 
-                             verticalalignment='bottom', 
-                             horizontalalignment='right',
-                             bbox=dict(boxstyle="round", facecolor="white", alpha=0.8))
-
-        plt.tight_layout()
+        # Adjust spacing to make room for all the text
+        plt.subplots_adjust(top=0.85, hspace=0.5)
         
         # 7. CONVERT TO IMAGE
         buf = BytesIO()
-        plt.savefig(buf, format="png")
+        plt.savefig(buf, format="png", bbox_inches='tight') # bbox_inches='tight' helps keep text from getting cut off
         plt.close(fig)
         buf.seek(0)
         img_str = base64.b64encode(buf.read()).decode("utf-8")
 
-        # RETURN IMAGE + NEW STATS
         return {
             "status": "success", 
             "image": img_str,
