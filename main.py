@@ -99,6 +99,7 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
         # 5. FILTER & EPOCH (With Artifact Rejection)
         raw.filter(0.1, 30.0, picks='eeg', n_jobs=-1, verbose=False)
         
+        # Define rejection threshold (e.g., 100 microvolts)
         reject_criteria = dict(eeg=100e-6) 
         
         epochs = mne.Epochs(
@@ -120,15 +121,13 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
         evoked_target = epochs['Target'].average()
         evoked_nontarget = epochs['Non-Target'].average()
 
-        # 6. PLOT (CLEAN GRID LAYOUT)
+        # 6. PLOT (REFINED GRID LAYOUT)
         
         fig = plt.figure(figsize=(12, 30)) 
         
-        # 7 Rows total.
-        # Row 0: Header (Ratio 1)
-        # Rows 1,3,5: Text Boxes (Ratio 0.8)
-        # Rows 2,4,6: Graphs (Ratio 3) -> Graphs are much taller than text
-        gs = gridspec.GridSpec(7, 1, height_ratios=[1, 0.8, 3, 0.8, 3, 0.8, 3], hspace=0.3)
+        # 7 Rows: Header, TextA, GraphA, TextB, GraphB, TextC, GraphC
+        # Increased Text row height slightly (0.7) for breathing room
+        gs = gridspec.GridSpec(7, 1, height_ratios=[1.2, 0.7, 2.5, 0.7, 2.5, 0.7, 2.5], hspace=0.4)
 
         # --- ROW 0: MAIN HEADER ---
         ax_header = fig.add_subplot(gs[0])
@@ -145,9 +144,9 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
             "This validates your design with hard biological data, not just opinions."
         )
         
-        # Simple Top Alignment
-        ax_header.text(0.5, 0.9, main_title, ha='center', fontsize=26, weight='bold', color='#2c3e50')
-        ax_header.text(0.5, 0.5, textwrap.fill(summary_text, width=90), ha='center', va='top', fontsize=14, style='italic', color='#34495e')
+        # Moved Header UP slightly
+        ax_header.text(0.5, 0.85, main_title, ha='center', fontsize=26, weight='bold', color='#2c3e50')
+        ax_header.text(0.5, 0.45, textwrap.fill(summary_text, width=90), ha='center', va='top', fontsize=14, style='italic', color='#34495e')
 
         # Section Definitions
         sections = [
@@ -178,16 +177,16 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
             ax_text = fig.add_subplot(gs[text_row])
             ax_text.axis('off') 
             
-            # Standard Left Alignment (No floating logic)
-            # x=0.05 gives a nice left margin
-            ax_text.text(0.05, 0.7, sec["title"], ha='left', fontsize=20, weight='bold', color='#2c3e50')
-            ax_text.text(0.05, 0.3, textwrap.fill(sec["desc"], width=100), ha='left', va='top', fontsize=14, color='#7f8c8d')
+            # Title Position: Moved slightly higher (0.6)
+            ax_text.text(0.05, 0.6, sec["title"], ha='left', fontsize=20, weight='bold', color='#2c3e50')
+            # Description Position: Moved slightly higher (0.2)
+            ax_text.text(0.05, 0.2, textwrap.fill(sec["desc"], width=100), ha='left', va='top', fontsize=14, color='#7f8c8d')
 
             # --- GRAPH ROW ---
             if channel in raw.ch_names:
                 ax_graph = fig.add_subplot(gs[graph_row])
                 
-                # Standard MNE Plot
+                # Plot
                 mne.viz.plot_compare_evokeds(
                     {'Target': evoked_target, 'Non-Target': evoked_nontarget}, 
                     picks=channel, 
@@ -205,10 +204,13 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
                 ax_graph.set_xlim(-0.2, 0.6)
                 ax_graph.set_ylim(-10, 35) 
                 
-                # Standard Labels
+                # Styling - Lighter Grid
+                ax_graph.spines['top'].set_visible(False)
+                ax_graph.spines['right'].set_visible(False)
+                ax_graph.grid(True, linestyle=':', alpha=0.6) # Dotted grid, lighter
                 ax_graph.set_ylabel("Amplitude (µV)", fontsize=12)
                 ax_graph.set_xlabel("Time (s)", fontsize=12)
-                ax_graph.grid(True)
+                ax_graph.tick_params(axis='both', which='major', labelsize=10)
 
         # 7. CONVERT TO IMAGE
         buf = BytesIO()
