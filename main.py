@@ -1,5 +1,6 @@
 import matplotlib
-# OPTIMIZATION 3: Set backend to 'Agg' to prevent GUI errors on headless servers
+# OPTIMIZATION 3: Set backend to 'Agg' before importing pyplot
+# This prevents "GUI not found" errors and optimizes for server-side image generation
 matplotlib.use('Agg')
 
 import uvicorn
@@ -17,7 +18,6 @@ import shutil
 
 app = FastAPI()
 
-# Allow frontend (Lovable/localhost) to access this API
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"], 
@@ -30,39 +30,41 @@ app.add_middleware(
 def read_root():
     return {"status": "EEG Server is Running!"}
 
-# OPTIMIZATION 1: Use synchronous 'def' to run in thread pool (prevents blocking)
+# OPTIMIZATION 1: Changed 'async def' to 'def'
+# This creates a synchronous function that FastAPI runs in a separate thread pool.
 @app.post("/analyze")
 def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(...)):
     
-    # --- 1. FILE HANDLING ---
-    # Save uploads to temporary files on disk (MNE requires file paths)
+    # 1. SAVE UPLOADS TEMP
     try:
+        # Create temp files
         tmp_cnt = tempfile.NamedTemporaryFile(delete=False, suffix=".cnt")
-        tmp_cnt.close()
+        tmp_cnt.close() 
         tmp_cnt_path = tmp_cnt.name
 
         tmp_exp = tempfile.NamedTemporaryFile(delete=False, suffix=".exp")
         tmp_exp.close()
         tmp_exp_path = tmp_exp.name
 
+        # Write content 
         with open(tmp_cnt_path, "wb") as buffer:
             shutil.copyfileobj(cnt_file.file, buffer)
             
         with open(tmp_exp_path, "wb") as buffer:
             shutil.copyfileobj(exp_file.file, buffer)
 
-        # --- 2. LOAD & PARSE ---
+        # 2. LOAD DATA
         raw = mne.io.read_raw_cnt(tmp_cnt_path, preload=True, verbose=False)
         
-        # Parse .exp file to map Trial IDs -> Conditions (R vs C) and get Reaction Times
+        # 3. PARSE EXP
         trial_type_map = {}
         reaction_times = []
         
         with open(tmp_exp_path, 'r') as f:
             lines = f.readlines()
-            for line in lines[8:]: # Skip 8 header lines
+            for line in lines[8:]: 
                 parts = line.strip().split('\t')
-                if len(parts) < 7: parts = line.strip().split() # Fallback split
+                if len(parts) < 7: parts = line.strip().split()
                 if len(parts) >= 7:
                     t_id = parts[0].strip()
                     t_name = parts[1].strip()
@@ -71,27 +73,26 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
                     except: t_lat = 1000
                     
                     trial_type_map[t_id] = t_type
-                    # Collect valid reaction times for Targets (R)
                     if t_type == 'R' and t_lat < 1000:
                         reaction_times.append((t_lat, t_id, t_name))
 
-        # --- 3. CALCULATE METRICS (Easiest/Toughest) ---
+        # Frontend Text Logic
         easiest_txt = "N/A"
         toughest_txt = "N/A"
         if reaction_times:
-            best = min(reaction_times, key=lambda x: x[0]) # Min latency
-            worst = max(reaction_times, key=lambda x: x[0]) # Max latency
+            best = min(reaction_times, key=lambda x: x[0])
+            worst = max(reaction_times, key=lambda x: x[0])
             
             easiest_txt = f"Trial {best[1]}: '{best[2]}' ({best[0]}ms)"
             toughest_txt = f"Trial {worst[1]}: '{worst[2]}' ({worst[0]}ms)"
 
-        # --- 4. CREATE MNE EVENTS ---
+        # 4. EVENTS
         new_events_list = []
         for annot in raw.annotations:
             clean_id = str(annot['description']).strip()
             sType = trial_type_map.get(clean_id, "Unknown")
             if sType == "Unknown": continue
-            code = 1 if sType == 'R' else 2 # 1=Target, 2=Non-Target
+            code = 1 if sType == 'R' else 2
             new_events_list.append([raw.time_as_index(annot['onset'])[0], 0, code])
 
         if not new_events_list:
@@ -100,8 +101,7 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
         custom_events = np.array(new_events_list)
         event_ids = {'Target': 1, 'Non-Target': 2}
 
-        # --- 5. PREPROCESSING (Filter & Epoch) ---
-        # OPTIMIZATION 2: n_jobs=-1 uses all CPU cores
+        # 5. FILTER & EPOCH
         raw.filter(0.1, 30.0, picks='eeg', n_jobs=-1, verbose=False)
         
         epochs = mne.Epochs(raw, custom_events, event_ids, tmin=-0.2, tmax=0.6, baseline=(None, 0), picks='eeg', preload=True, verbose=False)
@@ -109,13 +109,13 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
         evoked_target = epochs['Target'].average()
         evoked_nontarget = epochs['Non-Target'].average()
 
-        # --- 6. PLOTTING (REPORT STYLE) ---
+        # 6. PLOT (REPORT STYLE - PROFESSIONAL PDF LAYOUT)
         
-        # CONFIG: Figure Size
-        # height=30 gives us a long, scrollable report format
+        # ### LAYOUT CONTROL: CANVAS HEIGHT ###
+        # 30 inches gives massive vertical scrolling space
         fig, ax = plt.subplots(3, 1, figsize=(12, 30))
         
-        # CONTENT: Header Text
+        # --- MAIN HEADER ---
         main_title = "Neuro-UX: B2B Dashboard Analysis"
         summary_text = (
             "B2B Dashboard Analysis Summary\n\n"
@@ -127,12 +127,9 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
             "This validates your design with hard biological data, not just opinions."
         )
         
-        # PLACE HEADER
-        # 0.97 is near the very top edge. 0.93 is slightly below it.
-        fig.text(0.5, 0.96, main_title, ha='center', fontsize=24, weight='bold', color='#2c3e50')
-        fig.text(0.5, 0.95, textwrap.fill(summary_text, width=95), ha='center', va='top', fontsize=13, style='italic', color='#34495e')
+        fig.text(0.5, 0.97, main_title, ha='center', fontsize=24, weight='bold', color='#2c3e50')
+        fig.text(0.5, 0.93, textwrap.fill(summary_text, width=95), ha='center', va='top', fontsize=13, style='italic', color='#34495e')
 
-        # CONTENT: Section Definitions
         sections = [
             {
                 "comp": "P100", "ch": "OZ", "color": "green", "window": (0.08, 0.14),
@@ -151,38 +148,43 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
             }
         ]
         
-        # LOOP: Create graphs
         for i, sec in enumerate(sections):
             channel = sec["ch"]
             if channel in raw.ch_names:
-                # Plot Graph lines
                 mne.viz.plot_compare_evokeds(
                     {'Target': evoked_target, 'Non-Target': evoked_nontarget}, 
                     picks=channel, axes=ax[i], show=False, show_sensors=False, 
                     legend='upper right' if i == 0 else None, title=None
                 )
                 
-                # Highlight Window (Colored background)
+                # Highlight Window
                 ax[i].axvspan(sec["window"][0], sec["window"][1], color=sec["color"], alpha=0.1, label=f"{sec['comp']} Window")
                 
-                # --- TEXT PLACEMENT ---
-                # Title Position: 1.4 (High above graph)
-                ax[i].text(0.5, 1.4, sec["title"], transform=ax[i].transAxes, ha='center', va='bottom', fontsize=18, weight='bold', color='#2c3e50')
+                # --- TEXT BOXES (ADJUSTED POSITIONS) ---
                 
-                # Description Position: 1.15 (Between title and graph)
+                # 1. TITLE: Moved UP to 1.5 (High above graph)
+                ax[i].text(0.5, 1.5, sec["title"], 
+                         transform=ax[i].transAxes, 
+                         ha='center', va='bottom', 
+                         fontsize=18, weight='bold', color='#2c3e50')
+                
+                # 2. DESCRIPTION: Moved UP to 1.25 (Clear of graph lines)
                 wrapped_desc = textwrap.fill(sec["desc"], width=85)
-                ax[i].text(0.5, 1.15, wrapped_desc, transform=ax[i].transAxes, ha='center', va='top', fontsize=12, color='#7f8c8d',
+                ax[i].text(0.5, 1.25, wrapped_desc, 
+                         transform=ax[i].transAxes, 
+                         ha='center', va='top', 
+                         fontsize=12, color='#7f8c8d',
                          bbox=dict(boxstyle="round,pad=0.5", fc="white", ec="#bdc3c7", alpha=0.8))
 
-        # --- LAYOUT ADJUSTMENT ---
-        # top=0.78: Pushes graphs down to make room for the Main Header text.
-        # hspace=0.8: Adds vertical gap between graphs A, B, and C.
-        plt.subplots_adjust(top=0.79, hspace=0.4, bottom=0.05)
+        # ADJUST LAYOUT
+        # top=0.78: Keeps start point low for header
+        # hspace=1.0: Massive gap between graphs to fit the higher text boxes
+        plt.subplots_adjust(top=0.78, hspace=1.0, bottom=0.05)
         
-        # --- 7. EXPORT ---
+        # 7. CONVERT TO IMAGE
         buf = BytesIO()
-        # dpi=150 ensures text is crisp
-        plt.savefig(buf, format="png", bbox_inches='tight', dpi=150) 
+        # dpi=300: High Resolution (Print Quality)
+        plt.savefig(buf, format="png", bbox_inches='tight', dpi=300) 
         plt.close(fig)
         buf.seek(0)
         img_str = base64.b64encode(buf.read()).decode("utf-8")
@@ -197,7 +199,7 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
     except Exception as e:
         return {"error": str(e)}
     finally:
-        # Cleanup temp files to save space
+        # Cleanup
         if 'tmp_cnt_path' in locals() and os.path.exists(tmp_cnt_path): 
             os.remove(tmp_cnt_path)
         if 'tmp_exp_path' in locals() and os.path.exists(tmp_exp_path): 
