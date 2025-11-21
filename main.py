@@ -3,7 +3,7 @@ import matplotlib
 matplotlib.use('Agg')
 
 import uvicorn
-from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi import FastAPI, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 import mne
 import matplotlib.pyplot as plt
@@ -15,6 +15,7 @@ import base64
 import textwrap
 from io import BytesIO
 import shutil
+import traceback # For Advanced Debugging (Code B)
 
 app = FastAPI()
 
@@ -96,10 +97,14 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
         custom_events = np.array(new_events_list)
         event_ids = {'Target': 1, 'Non-Target': 2}
 
-        # 5. FILTER & EPOCH (No Artifact Rejection)
-        raw.filter(0.1, 30.0, picks='eeg', n_jobs=1, verbose=False)  # Changed n_jobs=-1 to n_jobs=1 to avoid joblib warning
+        # 5. FILTER & EPOCH (Hybrid Approach)
         
-        # Create epochs WITHOUT artifact rejection to keep all trials
+        # SPEED: Use n_jobs=-1 (Code A)
+        raw.filter(0.1, 30.0, picks='eeg', n_jobs=-1, verbose=False)
+        
+        # QUALITY: Use Artifact Rejection (Code A)
+        reject_criteria = dict(eeg=200e-6) 
+        
         epochs = mne.Epochs(
             raw, 
             custom_events, 
@@ -109,20 +114,29 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
             baseline=(None, 0), 
             picks='eeg', 
             preload=True, 
+            reject=reject_criteria, # Rejection Enabled
             verbose=False
         )
         
         if len(epochs) == 0:
             return {"error": "All trials were rejected due to artifacts (too much noise)."}
 
-        # Get evoked responses (these are in VOLTS by default)
+        # BALANCE: The "Middle Way" Logic
+        # This creates a fair comparison by making the trial counts even
+        # If one condition has fewer trials, the other is downsampled to match.
+        if 'Target' in epochs.event_id and 'Non-Target' in epochs.event_id:
+             # Only run if we actually have both conditions left after rejection
+             epochs.equalize_event_counts(['Target', 'Non-Target'], method='mintime')
+
+        # DATA UNITS: Use MNE Default (Code A request)
         evoked_target = epochs['Target'].average()
         evoked_nontarget = epochs['Non-Target'].average()
 
-        # 6. PLOT (REFINED GRID LAYOUT)
+        # 6. PLOT (Hybrid Layout)
         
         fig = plt.figure(figsize=(12, 32)) 
         
+        # Layout Ratios (Code B - Optimized for text space)
         gs = gridspec.GridSpec(7, 1, height_ratios=[1.2, 1.0, 2.5, 1.0, 2.5, 1.0, 2.5], hspace=0.5)
 
         # --- ROW 0: MAIN HEADER ---
@@ -168,7 +182,7 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
             text_row, graph_row = row_indices[i]
             channel = sec["ch"]
             
-            # --- TEXT ROW (CENTERED) ---
+            # --- TEXT ROW ---
             ax_text = fig.add_subplot(gs[text_row])
             ax_text.axis('off') 
             
@@ -179,63 +193,50 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
             if channel in raw.ch_names:
                 ax_graph = fig.add_subplot(gs[graph_row])
                 
-                # CRITICAL: Scale evoked data to microvolts BEFORE plotting
-                # Create copies to avoid modifying original data
-                evoked_target_uv = evoked_target.copy()
-                evoked_target_uv.data *= 1e6  # Convert V to µV
-                
-                evoked_nontarget_uv = evoked_nontarget.copy()
-                evoked_nontarget_uv.data *= 1e6  # Convert V to µV
-                
-                # Plot with pre-scaled data (no scalings parameter needed)
+                # PLOT: Using MNE default scaling (Scientific Notation) as requested
                 mne.viz.plot_compare_evokeds(
-                    {'Target': evoked_target_uv, 'Non-Target': evoked_nontarget_uv}, 
+                    {'Target': evoked_target, 'Non-Target': evoked_nontarget}, 
                     picks=channel, 
                     axes=ax_graph, 
                     show=False, 
                     show_sensors=False, 
                     legend='upper right',
-                    title=None
+                    title=None # Remove standard title
                 )
-                
-                # Remove scientific notation
-                ax_graph.ticklabel_format(style='plain', axis='y')
                 
                 # Highlight component time window
                 ax_graph.axvspan(sec["window"][0], sec["window"][1], color=sec["color"], alpha=0.15, label=f'{sec["comp"]} Window')
                 
-                # Set x-limits only - let y-axis auto-scale
+                # Set x-limits only
                 ax_graph.set_xlim(-0.2, 0.6)
                 
-                # Add zero line for reference
+                # STYLE: Add Zero line (Code B)
                 ax_graph.axhline(0, color='black', linewidth=0.5, linestyle='--', alpha=0.3)
                 
-                # Styling
+                # STYLE: Open Borders (Code B)
                 ax_graph.spines['top'].set_visible(False)
                 ax_graph.spines['right'].set_visible(False)
                 ax_graph.grid(True, linestyle=':', alpha=0.4)
-                ax_graph.set_ylabel("Amplitude (µV)", fontsize=12, weight='bold')
-                ax_graph.set_xlabel("Time (s)", fontsize=12, weight='bold')
-                ax_graph.tick_params(axis='both', which='major', labelsize=10)
                 
-                # Add component label on graph
+                # STYLE: Internal Labels Box (Code B)
                 ax_graph.text(0.02, 0.98, f'{sec["comp"]} @ {channel}', 
                               transform=ax_graph.transAxes, 
                               fontsize=11, weight='bold', 
                               verticalalignment='top', 
                               bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
             else:
+                # ERROR: Channel missing (Code B logic)
                 ax_graph = fig.add_subplot(gs[graph_row])
                 ax_graph.text(0.5, 0.5, f'Channel {channel} not found in data', 
                               ha='center', va='center', fontsize=14, color='red')
                 ax_graph.axis('off')
 
-        # Add metadata footer with trial balance info
+        # Add metadata footer
         target_count = len(epochs["Target"])
         nontarget_count = len(epochs["Non-Target"])
-        balance_note = ""
         
-        # Alert if severely imbalanced (less than 10 trials in either condition)
+        # LOW DATA WARNING: Code B Logic
+        balance_note = ""
         if target_count < 10 or nontarget_count < 10:
             balance_note = " ⚠️ Low trial count detected"
         
@@ -245,7 +246,8 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
 
         # 7. CONVERT TO IMAGE
         buf = BytesIO()
-        plt.savefig(buf, format="png", bbox_inches='tight', dpi=150)  # Reduced from 300 to 150 for faster transfer 
+        # RESOLUTION: High (Code A)
+        plt.savefig(buf, format="png", bbox_inches='tight', dpi=300) 
         plt.close(fig)
         buf.seek(0)
         img_str = base64.b64encode(buf.read()).decode("utf-8")
@@ -260,15 +262,16 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
                 "target_epochs": target_count,
                 "nontarget_epochs": nontarget_count,
                 "channels_analyzed": [sec["ch"] for sec in sections if sec["ch"] in raw.ch_names],
-                "balance_warning": target_count < 10 or nontarget_count < 10,
-                "artifact_rejection": "disabled"
+                # TRIAL IMBALANCE: Ignored (Code A)
+                "artifact_rejection": "enabled"
             }
         }
 
     except Exception as e:
+        # DEBUGGING: Advanced (Code B)
         import traceback
         error_details = traceback.format_exc()
-        print(f"ERROR: {error_details}")  # Print to server console
+        print(f"ERROR: {error_details}") 
         return {
             "error": str(e),
             "error_type": type(e).__name__,
