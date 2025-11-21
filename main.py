@@ -1,5 +1,5 @@
 import matplotlib
-# OPTIMIZATION 3: Set backend to 'Agg' to prevent GUI errors on headless servers
+# OPTIMIZATION: Agg backend for server-side rendering
 matplotlib.use('Agg')
 
 import uvicorn
@@ -16,7 +16,6 @@ import textwrap
 from io import BytesIO
 import shutil
 
-# --- FastAPI Initialization ---
 app = FastAPI()
 
 app.add_middleware(
@@ -31,147 +30,148 @@ app.add_middleware(
 def read_root():
     return {"status": "EEG Server is Running!"}
 
-# OPTIMIZATION 1: Use synchronous 'def' to run in thread pool (prevents blocking)
 @app.post("/analyze")
 def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(...)):
     
-    # --- 1. FILE HANDLING ---
-    # Save uploads to temporary files on disk (MNE requires file paths)
+    # 1. SAVE UPLOADS TEMP
     try:
         tmp_cnt = tempfile.NamedTemporaryFile(delete=False, suffix=".cnt")
-        tmp_cnt.close()
+        tmp_cnt.close() 
         tmp_cnt_path = tmp_cnt.name
 
         tmp_exp = tempfile.NamedTemporaryFile(delete=False, suffix=".exp")
         tmp_exp.close()
         tmp_exp_path = tmp_exp.name
 
-        # Write content using shutil for efficiency
         with open(tmp_cnt_path, "wb") as buffer:
             shutil.copyfileobj(cnt_file.file, buffer)
             
         with open(tmp_exp_path, "wb") as buffer:
             shutil.copyfileobj(exp_file.file, buffer)
 
-        # --- 2. LOAD & PARSE ---
+        # 2. LOAD DATA
         raw = mne.io.read_raw_cnt(tmp_cnt_path, preload=True, verbose=False)
         
-        # Parse .exp file to map Trial IDs -> Conditions (R vs C) and get Reaction Times
+        # 3. PARSE EXP
         trial_type_map = {}
         reaction_times = []
         
         with open(tmp_exp_path, 'r') as f:
             lines = f.readlines()
-            for line in lines[8:]: # Skip 8 header lines
+            for line in lines[8:]: 
                 parts = line.strip().split('\t')
-                if len(parts) < 7: parts = line.strip().split() # Fallback split
+                if len(parts) < 7: parts = line.strip().split()
                 if len(parts) >= 7:
-                    t_id = parts[0].strip()      # Trial ID
-                    t_name = parts[1].strip()    # Trial Name/Stimulus
-                    t_type = parts[3].strip()    # Trial Type (e.g., R for Target)
-                    try: 
-                        t_lat = int(parts[6].strip()) # Reaction Latency (ms)
-                    except ValueError: 
-                        t_lat = 1000 # Use a high value for missing/invalid RT
-
+                    t_id = parts[0].strip()
+                    t_name = parts[1].strip()
+                    t_type = parts[3].strip()
+                    try: t_lat = int(parts[6].strip())
+                    except: t_lat = 1000
+                    
                     trial_type_map[t_id] = t_type
-                    # Collect valid reaction times for Targets (R)
                     if t_type == 'R' and t_lat < 1000:
                         reaction_times.append((t_lat, t_id, t_name))
 
-        # --- 3. CALCULATE METRICS (Easiest/Toughest) ---
+        # Frontend Text Logic
         easiest_txt = "N/A"
         toughest_txt = "N/A"
         if reaction_times:
-            best = min(reaction_times, key=lambda x: x[0]) # Min latency
-            worst = max(reaction_times, key=lambda x: x[0]) # Max latency
-            
+            best = min(reaction_times, key=lambda x: x[0])
+            worst = max(reaction_times, key=lambda x: x[0])
             easiest_txt = f"Trial {best[1]}: '{best[2]}' ({best[0]}ms)"
             toughest_txt = f"Trial {worst[1]}: '{worst[2]}' ({worst[0]}ms)"
 
-        # --- 4. CREATE MNE EVENTS ---
+        # 4. EVENTS
         new_events_list = []
         for annot in raw.annotations:
             clean_id = str(annot['description']).strip()
             sType = trial_type_map.get(clean_id, "Unknown")
             if sType == "Unknown": continue
-            code = 1 if sType == 'R' else 2 # 1=Target, 2=Non-Target
+            code = 1 if sType == 'R' else 2
             new_events_list.append([raw.time_as_index(annot['onset'])[0], 0, code])
 
         if not new_events_list:
-            raise HTTPException(status_code=400, detail="No matching events found in .exp file")
+            return {"error": "No matching events found in .exp file"}
 
         custom_events = np.array(new_events_list)
         event_ids = {'Target': 1, 'Non-Target': 2}
 
-        # --- 5. PREPROCESSING (Filter & Epoch) ---
-        # OPTIMIZATION 2: n_jobs=-1 uses all CPU cores
+        # 5. FILTER & EPOCH (No Artifact Rejection)
         raw.filter(0.1, 30.0, picks='eeg', n_jobs=-1, verbose=False)
         
-        # Create epochs: tmin=-200ms, tmax=600ms, baseline to pre-stimulus period
-        # Artifact rejection explicitly NOT applied here (reject=None is default)
+        # Create epochs WITHOUT artifact rejection to keep all trials
         epochs = mne.Epochs(
             raw, 
             custom_events, 
             event_ids, 
             tmin=-0.2, 
             tmax=0.6, 
-            baseline=(None, 0), # Baseline is from tmin to 0s
+            baseline=(None, 0), 
             picks='eeg', 
             preload=True, 
             verbose=False
         )
         
-        # Get evoked responses (averaged ERPs)
+        # Log trial counts for debugging
+        print(f"DEBUG: Total epochs: {len(epochs)}, Target={len(epochs['Target'])}, Non-Target={len(epochs['Non-Target'])}")
+        
+        if len(epochs) == 0:
+            return {"error": "All trials were rejected due to artifacts (too much noise)."}
+
+        # Get evoked responses (these are in VOLTS by default)
         evoked_target = epochs['Target'].average()
         evoked_nontarget = epochs['Non-Target'].average()
 
-        # --- 6. PLOTTING (REPORT STYLE) ---
+        # 6. PLOT (REFINED GRID LAYOUT)
         
-        # CONFIG: Figure Size
-        # height=30 gives us a long, scrollable report format
-        fig, ax = plt.subplots(3, 1, figsize=(12, 30))
+        fig = plt.figure(figsize=(12, 32)) 
         
-        # CONTENT: Header Text
+        gs = gridspec.GridSpec(7, 1, height_ratios=[1.2, 1.0, 2.5, 1.0, 2.5, 1.0, 2.5], hspace=0.5)
+
+        # --- ROW 0: MAIN HEADER ---
+        ax_header = fig.add_subplot(gs[0])
+        ax_header.axis('off') 
+        
         main_title = "Neuro-UX: B2B Dashboard Analysis"
         summary_text = (
             "B2B Dashboard Analysis Summary\n\n"
-            "This analysis uses key ERP components to test dashboard usability: "
-            "The **P100** gauges visual clutter, the **N200** detects moments of user confusion, "
-            "and the **P300** measures cognitive resource allocation and decision confidence. "
-            "A faster P300 latency and higher P300 amplitude for 'Target' trials indicate superior design and lower cognitive load."
+            "In this experiment, we replace standard images with screenshots of your dashboard (Current vs. New) "
+            "to measure how easily users can make decisions. By giving a user a specific management task (e.g., 'Find the Revenue Drop'), "
+            "the EEG acts as an unbiased stress test: the P100 shows us if the visual design is too busy, "
+            "the N200 highlights exactly where users get confused by complex charts, and the P300 proves "
+            "how much faster the new design allows them to spot the answer and act on it. "
+            "This validates your design with hard biological data, not just opinions."
         )
         
-        # PLACE HEADER
-        # 0.97 is near the very top edge. 0.93 is slightly below it.
-        fig.text(0.5, 0.97, main_title, ha='center', fontsize=24, weight='bold', color='#2c3e50')
-        fig.text(0.5, 0.93, textwrap.fill(summary_text, width=95), ha='center', va='top', fontsize=13, style='italic', color='#34495e')
+        ax_header.text(0.5, 0.85, main_title, ha='center', fontsize=26, weight='bold', color='#2c3e50')
+        ax_header.text(0.5, 0.45, textwrap.fill(summary_text, width=90), ha='center', va='top', fontsize=14, style='italic', color='#34495e')
 
-        # CONTENT: Section Definitions
+        # Section Definitions
         sections = [
             {
                 "comp": "P100", "ch": "OZ", "color": "green", "window": (0.08, 0.14),
-                "title": "A. P100 (The 'First Glance' Test) @ OZ",
-                "desc": "Measures how physically overwhelming the screen is—telling us if the sheer amount of clutter is tiring the user's eyes before they even start reading. Amplitude is sensitive to low-level visual features."
+                "title": "A. P100 (The 'First Glance' Test)",
+                "desc": "Measures how physically overwhelming the screen is—telling us if the sheer amount of clutter is tiring the user's eyes before they even start reading."
             },
             {
                 "comp": "N200", "ch": "FZ", "color": "yellow", "window": (0.20, 0.30),
-                "title": "B. N200 (The 'Confusion' Test) @ FZ",
-                "desc": "Measures mental friction and conflict—revealing the exact moment a user gets stuck or frustrated because they can't instantly resolve the information needed for the task."
+                "title": "B. N200 (The 'Confusion' Test)",
+                "desc": "Measures mental friction—revealing the exact moment a user gets stuck or frustrated because they can't instantly find the insight they need in a wall of numbers."
             },
             {
                 "comp": "P300", "ch": "PZ", "color": "red", "window": (0.30, 0.50),
-                "title": "C. P300 (The 'Confidence' Test) @ PZ",
-                "desc": "Measures the 'Aha!' moment and resource allocation—proving the user has successfully understood the data and is ready to make a confident decision. Faster latency means quicker insight."
+                "title": "C. P300 (The 'Confidence' Test)",
+                "desc": "Measures the 'Aha!' moment—proving the user has successfully understood the data and is ready to make a confident decision, rather than hesitating."
             }
         ]
         
-        # LOOP: Create graphs
+        row_indices = [(1, 2), (3, 4), (5, 6)]
+
         for i, sec in enumerate(sections):
             text_row, graph_row = row_indices[i]
             channel = sec["ch"]
             
-            # --- TEXT ROW (COMPONENT HEADER) ---
+            # --- TEXT ROW (CENTERED) ---
             ax_text = fig.add_subplot(gs[text_row])
             ax_text.axis('off') 
             
@@ -180,7 +180,10 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
 
             # --- GRAPH ROW ---
             if channel in raw.ch_names:
-                # Plot Graph lines
+                ax_graph = fig.add_subplot(gs[graph_row])
+                
+                # CRITICAL: Use scalings parameter to display in microvolts
+                # This tells MNE to scale the voltage data (which is in volts) to microvolts for display
                 mne.viz.plot_compare_evokeds(
                     {'Target': evoked_target, 'Non-Target': evoked_nontarget}, 
                     picks=channel, 
@@ -189,30 +192,57 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
                     show_sensors=False, 
                     legend='upper right',
                     title=None,
-                    scalings=dict(eeg=1e6) # CRITICAL: Display in microvolts (µV)
+                    scalings=dict(eeg=1e6)  # Scale from volts to microvolts
                 )
                 
-                # Highlight Window (Colored background)
-                ax[i].axvspan(sec["window"][0], sec["window"][1], color=sec["color"], alpha=0.1, label=f"{sec['comp']} Window")
+                # Remove scientific notation
+                ax_graph.ticklabel_format(style='plain', axis='y')
                 
-                # --- TEXT PLACEMENT ---
-                # Title Position: 1.4 (High above graph)
-                ax[i].text(0.5, 1.4, sec["title"], transform=ax[i].transAxes, ha='center', va='bottom', fontsize=18, weight='bold', color='#2c3e50')
+                # Highlight component time window
+                ax_graph.axvspan(sec["window"][0], sec["window"][1], color=sec["color"], alpha=0.15, label=f'{sec["comp"]} Window')
                 
-                # Description Position: 1.15 (Between title and graph)
-                wrapped_desc = textwrap.fill(sec["desc"], width=85)
-                ax[i].text(0.5, 1.15, wrapped_desc, transform=ax[i].transAxes, ha='center', va='top', fontsize=12, color='#7f8c8d',
-                         bbox=dict(boxstyle="round,pad=0.5", fc="white", ec="#bdc3c7", alpha=0.8))
+                # Set x-limits only - let y-axis auto-scale
+                ax_graph.set_xlim(-0.2, 0.6)
+                
+                # Add zero line for reference
+                ax_graph.axhline(0, color='black', linewidth=0.5, linestyle='--', alpha=0.3)
+                
+                # Styling
+                ax_graph.spines['top'].set_visible(False)
+                ax_graph.spines['right'].set_visible(False)
+                ax_graph.grid(True, linestyle=':', alpha=0.4)
+                ax_graph.set_ylabel("Amplitude (µV)", fontsize=12, weight='bold')
+                ax_graph.set_xlabel("Time (s)", fontsize=12, weight='bold')
+                ax_graph.tick_params(axis='both', which='major', labelsize=10)
+                
+                # Add component label on graph
+                ax_graph.text(0.02, 0.98, f'{sec["comp"]} @ {channel}', 
+                              transform=ax_graph.transAxes, 
+                              fontsize=11, weight='bold', 
+                              verticalalignment='top', 
+                              bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+            else:
+                ax_graph = fig.add_subplot(gs[graph_row])
+                ax_graph.text(0.5, 0.5, f'Channel {channel} not found in data', 
+                              ha='center', va='center', fontsize=14, color='red')
+                ax_graph.axis('off')
 
-        # --- LAYOUT ADJUSTMENT ---
-        # top=0.78: Pushes graphs down to make room for the Main Header text.
-        # hspace=0.8: Adds vertical gap between graphs A, B, and C.
-        plt.subplots_adjust(top=0.78, hspace=0.8, bottom=0.05)
+        # Add metadata footer with trial balance info
+        target_count = len(epochs["Target"])
+        nontarget_count = len(epochs["Non-Target"])
+        balance_note = ""
         
-        # --- 7. EXPORT ---
+        # Alert if severely imbalanced (less than 10 trials in either condition)
+        if target_count < 10 or nontarget_count < 10:
+            balance_note = " ⚠️ Low trial count detected"
+        
+        fig.text(0.5, 0.01, 
+                f'Total Epochs: {len(epochs)} | Target: {target_count} | Non-Target: {nontarget_count}{balance_note}', 
+                ha='center', fontsize=10, style='italic', color='#7f8c8d')
+
+        # 7. CONVERT TO IMAGE
         buf = BytesIO()
-        # dpi=150 ensures text is crisp
-        plt.savefig(buf, format="png", bbox_inches='tight', dpi=150) 
+        plt.savefig(buf, format="png", bbox_inches='tight', dpi=300) 
         plt.close(fig)
         buf.seek(0)
         img_str = base64.b64encode(buf.read()).decode("utf-8")
@@ -228,17 +258,16 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
                 "nontarget_epochs": nontarget_count,
                 "channels_analyzed": [sec["ch"] for sec in sections if sec["ch"] in raw.ch_names],
                 "balance_warning": target_count < 10 or nontarget_count < 10,
-                "artifact_rejection": "disabled (all trials included)"
+                "artifact_rejection": "disabled"
             }
         }
 
     except Exception as e:
         return {"error": str(e)}
     finally:
-        # Cleanup temp files to save space
         if 'tmp_cnt_path' in locals() and os.path.exists(tmp_cnt_path): 
             os.remove(tmp_cnt_path)
-        if tmp_exp_path and os.path.exists(tmp_exp_path): 
+        if 'tmp_exp_path' in locals() and os.path.exists(tmp_exp_path): 
             os.remove(tmp_exp_path)
 
 if __name__ == "__main__":
