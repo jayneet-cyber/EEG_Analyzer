@@ -97,7 +97,7 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
         event_ids = {'Target': 1, 'Non-Target': 2}
 
         # 5. FILTER & EPOCH (No Artifact Rejection)
-        raw.filter(0.1, 30.0, picks='eeg', n_jobs=-1, verbose=False)
+        raw.filter(0.1, 30.0, picks='eeg', n_jobs=1, verbose=False)  # Changed n_jobs=-1 to n_jobs=1 to avoid joblib warning
         
         # Create epochs WITHOUT artifact rejection to keep all trials
         epochs = mne.Epochs(
@@ -111,9 +111,6 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
             preload=True, 
             verbose=False
         )
-        
-        # Log trial counts for debugging
-        print(f"DEBUG: Total epochs: {len(epochs)}, Target={len(epochs['Target'])}, Non-Target={len(epochs['Non-Target'])}")
         
         if len(epochs) == 0:
             return {"error": "All trials were rejected due to artifacts (too much noise)."}
@@ -182,17 +179,23 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
             if channel in raw.ch_names:
                 ax_graph = fig.add_subplot(gs[graph_row])
                 
-                # CRITICAL: Use scalings parameter to display in microvolts
-                # This tells MNE to scale the voltage data (which is in volts) to microvolts for display
+                # CRITICAL: Scale evoked data to microvolts BEFORE plotting
+                # Create copies to avoid modifying original data
+                evoked_target_uv = evoked_target.copy()
+                evoked_target_uv.data *= 1e6  # Convert V to µV
+                
+                evoked_nontarget_uv = evoked_nontarget.copy()
+                evoked_nontarget_uv.data *= 1e6  # Convert V to µV
+                
+                # Plot with pre-scaled data (no scalings parameter needed)
                 mne.viz.plot_compare_evokeds(
-                    {'Target': evoked_target, 'Non-Target': evoked_nontarget}, 
+                    {'Target': evoked_target_uv, 'Non-Target': evoked_nontarget_uv}, 
                     picks=channel, 
                     axes=ax_graph, 
                     show=False, 
                     show_sensors=False, 
                     legend='upper right',
-                    title=None,
-                    scalings=dict(eeg=1e6)  # Scale from volts to microvolts
+                    title=None
                 )
                 
                 # Remove scientific notation
@@ -242,7 +245,7 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
 
         # 7. CONVERT TO IMAGE
         buf = BytesIO()
-        plt.savefig(buf, format="png", bbox_inches='tight', dpi=300) 
+        plt.savefig(buf, format="png", bbox_inches='tight', dpi=150)  # Reduced from 300 to 150 for faster transfer 
         plt.close(fig)
         buf.seek(0)
         img_str = base64.b64encode(buf.read()).decode("utf-8")
@@ -263,7 +266,14 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
         }
 
     except Exception as e:
-        return {"error": str(e)}
+        import traceback
+        error_details = traceback.format_exc()
+        print(f"ERROR: {error_details}")  # Print to server console
+        return {
+            "error": str(e),
+            "error_type": type(e).__name__,
+            "error_details": error_details
+        }
     finally:
         if 'tmp_cnt_path' in locals() and os.path.exists(tmp_cnt_path): 
             os.remove(tmp_cnt_path)
