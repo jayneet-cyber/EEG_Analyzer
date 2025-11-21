@@ -120,10 +120,19 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
 
         # CRITICAL FIX: Convert to microvolts for proper visualization
         evoked_target = epochs['Target'].average()
-        evoked_target.data *= 1e6  # Convert from V to µV
-        
         evoked_nontarget = epochs['Non-Target'].average()
-        evoked_nontarget.data *= 1e6  # Convert from V to µV
+        
+        # Scale to microvolts (MNE uses volts internally)
+        evoked_target = mne.EvokedArray(
+            evoked_target.data * 1e6,
+            evoked_target.info,
+            tmin=evoked_target.times[0]
+        )
+        evoked_nontarget = mne.EvokedArray(
+            evoked_nontarget.data * 1e6,
+            evoked_nontarget.info,
+            tmin=evoked_nontarget.times[0]
+        )
 
         # 6. PLOT (REFINED GRID LAYOUT WITH FIXES)
         
@@ -177,13 +186,13 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
             text_row, graph_row = row_indices[i]
             channel = sec["ch"]
             
-            # --- TEXT ROW (FIXED POSITIONING) ---
+            # --- TEXT ROW (CENTERED) ---
             ax_text = fig.add_subplot(gs[text_row])
             ax_text.axis('off') 
             
-            # FIXED: Better vertical positioning to avoid overlap
-            ax_text.text(0.05, 0.75, sec["title"], ha='left', fontsize=20, weight='bold', color='#2c3e50')
-            ax_text.text(0.05, 0.25, textwrap.fill(sec["desc"], width=100), ha='left', va='top', fontsize=14, color='#7f8c8d')
+            # Centered text with better vertical positioning
+            ax_text.text(0.5, 0.75, sec["title"], ha='center', fontsize=20, weight='bold', color='#2c3e50')
+            ax_text.text(0.5, 0.25, textwrap.fill(sec["desc"], width=100), ha='center', va='top', fontsize=14, color='#7f8c8d')
 
             # --- GRAPH ROW ---
             if channel in raw.ch_names:
@@ -196,9 +205,12 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
                     axes=ax_graph, 
                     show=False, 
                     show_sensors=False, 
-                    legend='upper right',  # FIXED: Show legend on all plots
+                    legend='upper right',
                     title=None
                 )
+                
+                # Remove scientific notation from y-axis
+                ax_graph.ticklabel_format(style='plain', axis='y')
                 
                 # Highlight component time window
                 ax_graph.axvspan(sec["window"][0], sec["window"][1], color=sec["color"], alpha=0.15, label=f'{sec["comp"]} Window')
