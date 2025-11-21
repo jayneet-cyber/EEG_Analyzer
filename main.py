@@ -116,18 +116,21 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
         )
         
         if len(epochs) == 0:
-             return {"error": "All trials were rejected due to artifacts (too much noise)."}
+            return {"error": "All trials were rejected due to artifacts (too much noise)."}
 
+        # CRITICAL FIX: Convert to microvolts for proper visualization
         evoked_target = epochs['Target'].average()
+        evoked_target.data *= 1e6  # Convert from V to µV
+        
         evoked_nontarget = epochs['Non-Target'].average()
+        evoked_nontarget.data *= 1e6  # Convert from V to µV
 
-        # 6. PLOT (REFINED GRID LAYOUT)
+        # 6. PLOT (REFINED GRID LAYOUT WITH FIXES)
         
-        fig = plt.figure(figsize=(12, 30)) 
+        fig = plt.figure(figsize=(12, 32))  # Slightly taller for better spacing
         
-        # 7 Rows: Header, TextA, GraphA, TextB, GraphB, TextC, GraphC
-        # Increased Text row height slightly (0.7) for breathing room
-        gs = gridspec.GridSpec(7, 1, height_ratios=[1.2, 0.7, 2.5, 0.7, 2.5, 0.7, 2.5], hspace=0.4)
+        # FIXED: Increased text row heights (1.0 instead of 0.7) and more hspace
+        gs = gridspec.GridSpec(7, 1, height_ratios=[1.2, 1.0, 2.5, 1.0, 2.5, 1.0, 2.5], hspace=0.5)
 
         # --- ROW 0: MAIN HEADER ---
         ax_header = fig.add_subplot(gs[0])
@@ -144,7 +147,6 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
             "This validates your design with hard biological data, not just opinions."
         )
         
-        # Moved Header UP slightly
         ax_header.text(0.5, 0.85, main_title, ha='center', fontsize=26, weight='bold', color='#2c3e50')
         ax_header.text(0.5, 0.45, textwrap.fill(summary_text, width=90), ha='center', va='top', fontsize=14, style='italic', color='#34495e')
 
@@ -158,7 +160,7 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
             {
                 "comp": "N200", "ch": "FZ", "color": "yellow", "window": (0.20, 0.30),
                 "title": "B. N200 (The 'Confusion' Test)",
-                "desc": "Measures mental friction—revealing the exact moment a user gets stuck or frustrated because they can’t instantly find the insight they need in a wall of numbers."
+                "desc": "Measures mental friction—revealing the exact moment a user gets stuck or frustrated because they can't instantly find the insight they need in a wall of numbers."
             },
             {
                 "comp": "P300", "ch": "PZ", "color": "red", "window": (0.30, 0.50),
@@ -169,48 +171,86 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
         
         row_indices = [(1, 2), (3, 4), (5, 6)]
 
+        # Calculate dynamic y-limits based on actual data
+        all_data = np.concatenate([
+            evoked_target.data[evoked_target.ch_names.index(sec["ch"])].flatten() 
+            if sec["ch"] in evoked_target.ch_names else np.array([0])
+            for sec in sections
+        ] + [
+            evoked_nontarget.data[evoked_nontarget.ch_names.index(sec["ch"])].flatten() 
+            if sec["ch"] in evoked_nontarget.ch_names else np.array([0])
+            for sec in sections
+        ])
+        
+        # Set y-limits with 20% padding
+        y_min = all_data.min() * 1.2 if all_data.min() < 0 else all_data.min() * 0.8
+        y_max = all_data.max() * 1.2
+        
+        # Ensure reasonable limits (fallback to defaults if data is too flat)
+        if abs(y_max - y_min) < 1:
+            y_min, y_max = -10, 35
+
         for i, sec in enumerate(sections):
             text_row, graph_row = row_indices[i]
             channel = sec["ch"]
             
-            # --- TEXT ROW ---
+            # --- TEXT ROW (FIXED POSITIONING) ---
             ax_text = fig.add_subplot(gs[text_row])
             ax_text.axis('off') 
             
-            # Title Position: Moved slightly higher (0.6)
-            ax_text.text(0.05, 0.6, sec["title"], ha='left', fontsize=20, weight='bold', color='#2c3e50')
-            # Description Position: Moved slightly higher (0.2)
-            ax_text.text(0.05, 0.2, textwrap.fill(sec["desc"], width=100), ha='left', va='top', fontsize=14, color='#7f8c8d')
+            # FIXED: Better vertical positioning to avoid overlap
+            ax_text.text(0.05, 0.75, sec["title"], ha='left', fontsize=20, weight='bold', color='#2c3e50')
+            ax_text.text(0.05, 0.25, textwrap.fill(sec["desc"], width=100), ha='left', va='top', fontsize=14, color='#7f8c8d')
 
             # --- GRAPH ROW ---
             if channel in raw.ch_names:
                 ax_graph = fig.add_subplot(gs[graph_row])
                 
-                # Plot
+                # Plot with legend on all graphs for clarity
                 mne.viz.plot_compare_evokeds(
                     {'Target': evoked_target, 'Non-Target': evoked_nontarget}, 
                     picks=channel, 
                     axes=ax_graph, 
                     show=False, 
                     show_sensors=False, 
-                    legend='upper right' if i == 0 else None,
+                    legend='upper right',  # FIXED: Show legend on all plots
                     title=None
                 )
                 
-                # Highlight
-                ax_graph.axvspan(sec["window"][0], sec["window"][1], color=sec["color"], alpha=0.1)
+                # Highlight component time window
+                ax_graph.axvspan(sec["window"][0], sec["window"][1], color=sec["color"], alpha=0.15, label=f'{sec["comp"]} Window')
                 
-                # STRICT AXIS LIMITS
+                # FIXED: Use dynamic y-limits
                 ax_graph.set_xlim(-0.2, 0.6)
-                ax_graph.set_ylim(-10, 35) 
+                ax_graph.set_ylim(y_min, y_max)
+                
+                # Add zero line for reference
+                ax_graph.axhline(0, color='black', linewidth=0.5, linestyle='--', alpha=0.3)
                 
                 # Styling - Lighter Grid
                 ax_graph.spines['top'].set_visible(False)
                 ax_graph.spines['right'].set_visible(False)
-                ax_graph.grid(True, linestyle=':', alpha=0.6) # Dotted grid, lighter
-                ax_graph.set_ylabel("Amplitude (µV)", fontsize=12)
-                ax_graph.set_xlabel("Time (s)", fontsize=12)
+                ax_graph.grid(True, linestyle=':', alpha=0.4)  # Even lighter grid
+                ax_graph.set_ylabel("Amplitude (µV)", fontsize=12, weight='bold')
+                ax_graph.set_xlabel("Time (s)", fontsize=12, weight='bold')
                 ax_graph.tick_params(axis='both', which='major', labelsize=10)
+                
+                # Add component label on graph
+                ax_graph.text(0.02, 0.98, f'{sec["comp"]} @ {channel}', 
+                             transform=ax_graph.transAxes, 
+                             fontsize=11, weight='bold',
+                             verticalalignment='top',
+                             bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+            else:
+                # FIXED: Provide feedback when channel is missing
+                ax_graph = fig.add_subplot(gs[graph_row])
+                ax_graph.text(0.5, 0.5, f'Channel {channel} not found in data', 
+                             ha='center', va='center', fontsize=14, color='red')
+                ax_graph.axis('off')
+
+        # Add metadata footer
+        fig.text(0.5, 0.01, f'Total Epochs: {len(epochs)} | Target: {len(epochs["Target"])} | Non-Target: {len(epochs["Non-Target"])}', 
+                ha='center', fontsize=10, style='italic', color='#7f8c8d')
 
         # 7. CONVERT TO IMAGE
         buf = BytesIO()
@@ -223,7 +263,13 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
             "status": "success", 
             "image": img_str,
             "easiest": easiest_txt,
-            "toughest": toughest_txt
+            "toughest": toughest_txt,
+            "metadata": {
+                "total_epochs": len(epochs),
+                "target_epochs": len(epochs["Target"]),
+                "nontarget_epochs": len(epochs["Non-Target"]),
+                "channels_analyzed": [sec["ch"] for sec in sections if sec["ch"] in raw.ch_names]
+            }
         }
 
     except Exception as e:
