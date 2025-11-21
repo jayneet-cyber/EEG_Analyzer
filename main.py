@@ -1,6 +1,5 @@
 import matplotlib
-# OPTIMIZATION 3: Set backend to 'Agg' before importing pyplot
-# This prevents "GUI not found" errors and optimizes for server-side image generation
+# OPTIMIZATION: Agg backend for server-side rendering
 matplotlib.use('Agg')
 
 import uvicorn
@@ -8,6 +7,7 @@ from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import mne
 import matplotlib.pyplot as plt
+import matplotlib.gridspec as gridspec # IMPORT NEW LAYOUT TOOL
 import numpy as np
 import tempfile
 import os
@@ -30,14 +30,11 @@ app.add_middleware(
 def read_root():
     return {"status": "EEG Server is Running!"}
 
-# OPTIMIZATION 1: Changed 'async def' to 'def'
-# This creates a synchronous function that FastAPI runs in a separate thread pool.
 @app.post("/analyze")
 def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(...)):
     
     # 1. SAVE UPLOADS TEMP
     try:
-        # Create temp files
         tmp_cnt = tempfile.NamedTemporaryFile(delete=False, suffix=".cnt")
         tmp_cnt.close() 
         tmp_cnt_path = tmp_cnt.name
@@ -46,7 +43,6 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
         tmp_exp.close()
         tmp_exp_path = tmp_exp.name
 
-        # Write content 
         with open(tmp_cnt_path, "wb") as buffer:
             shutil.copyfileobj(cnt_file.file, buffer)
             
@@ -82,7 +78,6 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
         if reaction_times:
             best = min(reaction_times, key=lambda x: x[0])
             worst = max(reaction_times, key=lambda x: x[0])
-            
             easiest_txt = f"Trial {best[1]}: '{best[2]}' ({best[0]}ms)"
             toughest_txt = f"Trial {worst[1]}: '{worst[2]}' ({worst[0]}ms)"
 
@@ -103,19 +98,29 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
 
         # 5. FILTER & EPOCH
         raw.filter(0.1, 30.0, picks='eeg', n_jobs=-1, verbose=False)
-        
         epochs = mne.Epochs(raw, custom_events, event_ids, tmin=-0.2, tmax=0.6, baseline=(None, 0), picks='eeg', preload=True, verbose=False)
         
         evoked_target = epochs['Target'].average()
         evoked_nontarget = epochs['Non-Target'].average()
 
-        # 6. PLOT (REPORT STYLE - PROFESSIONAL PDF LAYOUT)
+        # ============================================================
+        # 6. PLOTTING (GRID SPEC LAYOUT - THE PROFESSIONAL FIX)
+        # ============================================================
         
-        # ### LAYOUT CONTROL: CANVAS HEIGHT ###
-        # 30 inches gives massive vertical scrolling space
-        fig, ax = plt.subplots(3, 1, figsize=(12, 30))
+        # We use a tall figure
+        fig = plt.figure(figsize=(12, 28))
         
-        # --- MAIN HEADER ---
+        # Define a grid with 7 rows.
+        # The 'height_ratios' define relative size:
+        # 0.8 = Header Space
+        # 0.4 = Text Space (Title + Desc)
+        # 2.0 = Graph Space
+        gs = gridspec.GridSpec(7, 1, height_ratios=[0.8, 0.4, 2, 0.4, 2, 0.4, 2], hspace=0.4)
+
+        # --- ROW 0: MAIN HEADER ---
+        ax_header = fig.add_subplot(gs[0])
+        ax_header.axis('off') # Hide axis lines
+        
         main_title = "Neuro-UX: B2B Dashboard Analysis"
         summary_text = (
             "B2B Dashboard Analysis Summary\n\n"
@@ -127,9 +132,10 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
             "This validates your design with hard biological data, not just opinions."
         )
         
-        fig.text(0.5, 0.97, main_title, ha='center', fontsize=24, weight='bold', color='#2c3e50')
-        fig.text(0.5, 0.93, textwrap.fill(summary_text, width=95), ha='center', va='top', fontsize=13, style='italic', color='#34495e')
+        ax_header.text(0.5, 0.8, main_title, ha='center', fontsize=24, weight='bold', color='#2c3e50')
+        ax_header.text(0.5, 0.4, textwrap.fill(summary_text, width=95), ha='center', va='top', fontsize=13, style='italic', color='#34495e')
 
+        # Section Definitions
         sections = [
             {
                 "comp": "P100", "ch": "OZ", "color": "green", "window": (0.08, 0.14),
@@ -148,42 +154,53 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
             }
         ]
         
+        # Loop to create pairs of (Text Box, Graph Box)
+        # Rows indices: 1&2 for A, 3&4 for B, 5&6 for C
+        row_indices = [(1, 2), (3, 4), (5, 6)]
+
         for i, sec in enumerate(sections):
+            text_row, graph_row = row_indices[i]
             channel = sec["ch"]
+            
+            # --- TEXT ROW (The "Box" above the graph) ---
+            ax_text = fig.add_subplot(gs[text_row])
+            ax_text.axis('off') # Hide box
+            
+            # Plot Title & Desc in this dedicated space
+            ax_text.text(0.0, 0.6, sec["title"], ha='left', fontsize=18, weight='bold', color='#2c3e50')
+            ax_text.text(0.0, 0.2, textwrap.fill(sec["desc"], width=110), ha='left', va='top', fontsize=12, color='#7f8c8d')
+
+            # --- GRAPH ROW ---
             if channel in raw.ch_names:
+                ax_graph = fig.add_subplot(gs[graph_row])
+                
+                # Plot
                 mne.viz.plot_compare_evokeds(
                     {'Target': evoked_target, 'Non-Target': evoked_nontarget}, 
-                    picks=channel, axes=ax[i], show=False, show_sensors=False, 
-                    legend='upper right' if i == 0 else None, title=None
+                    picks=channel, 
+                    axes=ax_graph, 
+                    show=False, 
+                    show_sensors=False, 
+                    legend='upper right' if i == 0 else None,
+                    title=None
                 )
                 
-                # Highlight Window
-                ax[i].axvspan(sec["window"][0], sec["window"][1], color=sec["color"], alpha=0.1, label=f"{sec['comp']} Window")
+                # Highlight
+                ax_graph.axvspan(sec["window"][0], sec["window"][1], color=sec["color"], alpha=0.1)
                 
-                # --- TEXT BOXES (ADJUSTED POSITIONS) ---
+                # STRICT AXIS LIMITS (As requested)
+                ax_graph.set_xlim(-0.2, 0.6)
+                ax_graph.set_ylim(-10, 35) # Fixed 35uV scale
                 
-                # 1. TITLE: Moved UP to 1.5 (High above graph)
-                ax[i].text(0.5, 1.5, sec["title"], 
-                         transform=ax[i].transAxes, 
-                         ha='center', va='bottom', 
-                         fontsize=18, weight='bold', color='#2c3e50')
-                
-                # 2. DESCRIPTION: Moved UP to 1.25 (Clear of graph lines)
-                wrapped_desc = textwrap.fill(sec["desc"], width=85)
-                ax[i].text(0.5, 1.25, wrapped_desc, 
-                         transform=ax[i].transAxes, 
-                         ha='center', va='top', 
-                         fontsize=12, color='#7f8c8d',
-                         bbox=dict(boxstyle="round,pad=0.5", fc="white", ec="#bdc3c7", alpha=0.8))
+                # Clean up the graph look
+                ax_graph.spines['top'].set_visible(False)
+                ax_graph.spines['right'].set_visible(False)
+                ax_graph.grid(True, linestyle='--', alpha=0.5)
+                ax_graph.set_ylabel("Amplitude (µV)")
+                ax_graph.set_xlabel("Time (s)")
 
-        # ADJUST LAYOUT
-        # top=0.78: Keeps start point low for header
-        # hspace=1.0: Massive gap between graphs to fit the higher text boxes
-        plt.subplots_adjust(top=0.78, hspace=1.0, bottom=0.05)
-        
         # 7. CONVERT TO IMAGE
         buf = BytesIO()
-        # dpi=300: High Resolution (Print Quality)
         plt.savefig(buf, format="png", bbox_inches='tight', dpi=300) 
         plt.close(fig)
         buf.seek(0)
@@ -199,7 +216,6 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
     except Exception as e:
         return {"error": str(e)}
     finally:
-        # Cleanup
         if 'tmp_cnt_path' in locals() and os.path.exists(tmp_cnt_path): 
             os.remove(tmp_cnt_path)
         if 'tmp_exp_path' in locals() and os.path.exists(tmp_exp_path): 
