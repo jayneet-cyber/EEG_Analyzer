@@ -99,7 +99,8 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
         event_ids = {'Target': 1, 'Non-Target': 2}
 
         # --- 5. FILTER & EPOCH ---
-        # UPDATED: Changed High-Pass from 0.1 to 0.5 Hz based on NotebookLM research
+        # n_jobs=1 is safer for small cloud instances (prevents memory crashes)
+        # Filter: 0.5Hz to 30Hz (Standard for P300)
         raw.filter(0.5, 30.0, picks='eeg', n_jobs=1, verbose=False) 
         
         # ARTIFACT REJECTION DICTIONARY
@@ -161,8 +162,8 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
         sections = [
             {
                 "comp": "P100", "ch": "OZ", "color": "green", "window": (0.08, 0.14),
-                "title": "A. P100 (The 'Visual Impact' Test)", # UPDATED TITLE
-                "desc": "Measures how strongly the visual design grabs the brain's attention—telling us if the visual elements are striking enough to register immediately." # UPDATED DESC
+                "title": "A. P100 (The 'Visual Impact' Test)", 
+                "desc": "Measures how strongly the visual design grabs the brain's attention—telling us if the visual elements are striking enough to register immediately."
             },
             {
                 "comp": "N200", "ch": "FZ", "color": "yellow", "window": (0.20, 0.30),
@@ -177,6 +178,9 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
         ]
         
         row_indices = [(1, 2), (3, 4), (5, 6)] 
+        
+        # Init variable for the JSON response
+        p300_score_txt = "N/A"
 
         for i, sec in enumerate(sections):
             text_row, graph_row = row_indices[i]
@@ -195,8 +199,7 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
             if channel in raw.ch_names:
                 ax_graph = fig.add_subplot(gs[graph_row])
                 
-                # PLOT: Using MNE default scaling (Scientific Notation) as requested
-                # We pass the original objects (evoked_target, evoked_nontarget) directly
+                # PLOT: Using MNE default scaling (Scientific Notation)
                 mne.viz.plot_compare_evokeds(
                     {'Target': evoked_target, 'Non-Target': evoked_nontarget}, 
                     picks=channel, 
@@ -228,8 +231,45 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
                               verticalalignment='top', 
                               bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
                               
-                # SPECIAL FOOTNOTE FOR P300 (Section C)
+                # --- SPECIAL LOGIC FOR P300 SCORE ---
                 if sec["comp"] == "P300":
+                    # 1. Get Data for Target condition (Index 0 usually matches first dict entry, but safer to get by name if possible)
+                    # evoked_target.data is (n_channels, n_times)
+                    # We need the specific channel index
+                    ch_idx = evoked_target.ch_names.index(channel)
+                    data = evoked_target.data[ch_idx, :]
+                    times = evoked_target.times
+                    
+                    # 2. Find Peak in P300 Window (300ms - 500ms)
+                    mask = (times >= 0.3) & (times <= 0.5)
+                    if np.any(mask):
+                        window_data = data[mask]
+                        window_times = times[mask]
+                        
+                        # Find index of max amplitude
+                        peak_idx = np.argmax(window_data)
+                        peak_latency_ms = window_times[peak_idx] * 1000
+                        
+                        # 3. Calculate Score (Linear mapping: 300ms=100%, 600ms=0%)
+                        # Formula: Score = 100 - ((Lat - 300) / 300 * 100)
+                        # Clamped between 0 and 100
+                        raw_score = 100 - ((peak_latency_ms - 300) / (600 - 300) * 100)
+                        score = max(0, min(100, raw_score))
+                        
+                        p300_score_txt = f"{score:.0f}%"
+                        
+                        # 4. Add Score Box to Graph
+                        score_text = (
+                            f"P300 Latency: {peak_latency_ms:.0f} ms\n"
+                            f"Neural Confidence Score: {p300_score_txt}"
+                        )
+                        ax_graph.text(0.98, 0.05, score_text, 
+                                    transform=ax_graph.transAxes, 
+                                    ha='right', va='bottom', fontsize=11, weight='bold',
+                                    color='red',
+                                    bbox=dict(boxstyle='round,pad=0.5', fc='#fff5f5', ec='red', alpha=0.9))
+
+                    # Add Research Footnote
                     ax_graph.text(0.5, -0.25, 
                                 "* Research indicates that higher P300 latency directly correlates with slower task completion and lower user confidence.",
                                 transform=ax_graph.transAxes, 
@@ -265,6 +305,7 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
             "image": img_str,
             "easiest": easiest_txt,
             "toughest": toughest_txt,
+            "neural_confidence_score": p300_score_txt, # Return this for frontend use if needed
             "metadata": {
                 "total_events_found": total_events,
                 "clean_epochs_kept": len(epochs),
