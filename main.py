@@ -1,9 +1,9 @@
 import matplotlib
-# OPTIMIZATION: Agg backend for server-side rendering
+# OPTIMIZATION: Agg backend prevents "GUI not found" errors on cloud servers
 matplotlib.use('Agg')
 
 import uvicorn
-from fastapi import FastAPI, File, UploadFile
+from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import mne
 import matplotlib.pyplot as plt
@@ -15,7 +15,6 @@ import base64
 import textwrap
 from io import BytesIO
 import shutil
-import traceback # For Advanced Debugging (Code B)
 
 app = FastAPI()
 
@@ -34,8 +33,9 @@ def read_root():
 @app.post("/analyze")
 def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(...)):
     
-    # 1. SAVE UPLOADS TEMP
+    # --- 1. FILE HANDLING ---
     try:
+        # Create temporary files to store the uploads
         tmp_cnt = tempfile.NamedTemporaryFile(delete=False, suffix=".cnt")
         tmp_cnt.close() 
         tmp_cnt_path = tmp_cnt.name
@@ -44,16 +44,17 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
         tmp_exp.close()
         tmp_exp_path = tmp_exp.name
 
+        # Write data to disk
         with open(tmp_cnt_path, "wb") as buffer:
             shutil.copyfileobj(cnt_file.file, buffer)
             
         with open(tmp_exp_path, "wb") as buffer:
             shutil.copyfileobj(exp_file.file, buffer)
 
-        # 2. LOAD DATA
+        # --- 2. LOAD DATA ---
         raw = mne.io.read_raw_cnt(tmp_cnt_path, preload=True, verbose=False)
         
-        # 3. PARSE EXP
+        # --- 3. PARSE EXPERIMENT LOG ---
         trial_type_map = {}
         reaction_times = []
         
@@ -73,7 +74,7 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
                     if t_type == 'R' and t_lat < 1000:
                         reaction_times.append((t_lat, t_id, t_name))
 
-        # Frontend Text Logic
+        # Calculate "Easiest" and "Toughest" tasks based on reaction time
         easiest_txt = "N/A"
         toughest_txt = "N/A"
         if reaction_times:
@@ -82,7 +83,7 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
             easiest_txt = f"Trial {best[1]}: '{best[2]}' ({best[0]}ms)"
             toughest_txt = f"Trial {worst[1]}: '{worst[2]}' ({worst[0]}ms)"
 
-        # 4. EVENTS
+        # --- 4. MAP EVENTS ---
         new_events_list = []
         for annot in raw.annotations:
             clean_id = str(annot['description']).strip()
@@ -97,14 +98,14 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
         custom_events = np.array(new_events_list)
         event_ids = {'Target': 1, 'Non-Target': 2}
 
-        # 5. FILTER & EPOCH (Hybrid Approach)
+        # --- 5. FILTER & EPOCH ---
+        # n_jobs=1 is safer for small cloud instances (prevents memory crashes)
+        raw.filter(0.1, 30.0, picks='eeg', n_jobs=1, verbose=False) 
         
-        # SPEED: Use n_jobs=-1 (Code A)
-        raw.filter(0.1, 30.0, picks='eeg', n_jobs=-1, verbose=False)
-        
-        # QUALITY: Use Artifact Rejection (Code A)
-        reject_criteria = dict(eeg=200e-6) 
-        
+        # ARTIFACT REJECTION DICTIONARY
+        reject_criteria = dict(eeg=100e-6)
+
+        # Create epochs WITH artifact rejection
         epochs = mne.Epochs(
             raw, 
             custom_events, 
@@ -113,33 +114,32 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
             tmax=0.6, 
             baseline=(None, 0), 
             picks='eeg', 
+            reject=reject_criteria,
             preload=True, 
-            reject=reject_criteria, # Rejection Enabled
             verbose=False
         )
         
+        # --- CALCULATE DROP STATS ---
+        total_events = len(custom_events)
+        good_epochs = len(epochs)
+        dropped_epochs = total_events - good_epochs
+        drop_percentage = (dropped_epochs / total_events) * 100 if total_events > 0 else 0
+
+        # Check if we have enough trials left after rejection
         if len(epochs) == 0:
             return {"error": "All trials were rejected due to artifacts (too much noise)."}
 
-        # BALANCE: The "Middle Way" Logic
-        # This creates a fair comparison by making the trial counts even
-        # If one condition has fewer trials, the other is downsampled to match.
-        if 'Target' in epochs.event_id and 'Non-Target' in epochs.event_id:
-             # Only run if we actually have both conditions left after rejection
-             epochs.equalize_event_counts(['Target', 'Non-Target'], method='mintime')
-
-        # DATA UNITS: Use MNE Default (Code A request)
+        # Average the epochs to get the ERP
         evoked_target = epochs['Target'].average()
         evoked_nontarget = epochs['Non-Target'].average()
 
-        # 6. PLOT (Hybrid Layout)
+        # --- 6. PLOT REPORT (GRID LAYOUT) ---
         
         fig = plt.figure(figsize=(12, 32)) 
         
-        # Layout Ratios (Code B - Optimized for text space)
         gs = gridspec.GridSpec(7, 1, height_ratios=[1.2, 1.0, 2.5, 1.0, 2.5, 1.0, 2.5], hspace=0.5)
 
-        # --- ROW 0: MAIN HEADER ---
+        # --- HEADER SECTION ---
         ax_header = fig.add_subplot(gs[0])
         ax_header.axis('off') 
         
@@ -157,7 +157,7 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
         ax_header.text(0.5, 0.85, main_title, ha='center', fontsize=26, weight='bold', color='#2c3e50')
         ax_header.text(0.5, 0.45, textwrap.fill(summary_text, width=90), ha='center', va='top', fontsize=14, style='italic', color='#34495e')
 
-        # Section Definitions
+        # Definitions for the 3 Sections
         sections = [
             {
                 "comp": "P100", "ch": "OZ", "color": "green", "window": (0.08, 0.14),
@@ -176,78 +176,87 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
             }
         ]
         
-        row_indices = [(1, 2), (3, 4), (5, 6)]
+        row_indices = [(1, 2), (3, 4), (5, 6)] 
 
         for i, sec in enumerate(sections):
             text_row, graph_row = row_indices[i]
             channel = sec["ch"]
             
-            # --- TEXT ROW ---
+            # --- RENDER TEXT ROW ---
             ax_text = fig.add_subplot(gs[text_row])
             ax_text.axis('off') 
             
+            # Title
             ax_text.text(0.5, 0.75, sec["title"], ha='center', fontsize=20, weight='bold', color='#2c3e50')
+            # Description
             ax_text.text(0.5, 0.25, textwrap.fill(sec["desc"], width=100), ha='center', va='top', fontsize=14, color='#7f8c8d')
 
-            # --- GRAPH ROW ---
+            # --- RENDER GRAPH ROW ---
             if channel in raw.ch_names:
                 ax_graph = fig.add_subplot(gs[graph_row])
                 
-                # PLOT: Using MNE default scaling (Scientific Notation) as requested
+                # Scale Data: Convert from Volts to Microvolts (x 1,000,000)
+                evoked_target_uv = evoked_target.copy()
+                evoked_target_uv.data *= 1e6 
+                
+                evoked_nontarget_uv = evoked_nontarget.copy()
+                evoked_nontarget_uv.data *= 1e6 
+                
+                # Plot Lines
                 mne.viz.plot_compare_evokeds(
-                    {'Target': evoked_target, 'Non-Target': evoked_nontarget}, 
+                    {'Target': evoked_target_uv, 'Non-Target': evoked_nontarget_uv}, 
                     picks=channel, 
                     axes=ax_graph, 
                     show=False, 
                     show_sensors=False, 
                     legend='upper right',
-                    title=None # Remove standard title
+                    title=None
                 )
                 
-                # Highlight component time window
+                # Remove scientific notation on Y-axis
+                ax_graph.ticklabel_format(style='plain', axis='y')
+                
+                # Highlight Time Window
                 ax_graph.axvspan(sec["window"][0], sec["window"][1], color=sec["color"], alpha=0.15, label=f'{sec["comp"]} Window')
                 
-                # Set x-limits only
+                # Styling: X-limits and Zero Line
                 ax_graph.set_xlim(-0.2, 0.6)
-                
-                # STYLE: Add Zero line (Code B)
                 ax_graph.axhline(0, color='black', linewidth=0.5, linestyle='--', alpha=0.3)
                 
-                # STYLE: Open Borders (Code B)
+                # Clean up borders
                 ax_graph.spines['top'].set_visible(False)
                 ax_graph.spines['right'].set_visible(False)
                 ax_graph.grid(True, linestyle=':', alpha=0.4)
+                ax_graph.set_ylabel("Amplitude (µV)", fontsize=12, weight='bold')
+                ax_graph.set_xlabel("Time (s)", fontsize=12, weight='bold')
                 
-                # STYLE: Internal Labels Box (Code B)
+                # Add Label inside graph
                 ax_graph.text(0.02, 0.98, f'{sec["comp"]} @ {channel}', 
                               transform=ax_graph.transAxes, 
                               fontsize=11, weight='bold', 
                               verticalalignment='top', 
                               bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
             else:
-                # ERROR: Channel missing (Code B logic)
                 ax_graph = fig.add_subplot(gs[graph_row])
-                ax_graph.text(0.5, 0.5, f'Channel {channel} not found in data', 
-                              ha='center', va='center', fontsize=14, color='red')
+                ax_graph.text(0.5, 0.5, f'Channel {channel} not found', ha='center', fontsize=14, color='red')
                 ax_graph.axis('off')
 
-        # Add metadata footer
+        # --- FOOTER METADATA (UPDATED) ---
         target_count = len(epochs["Target"])
         nontarget_count = len(epochs["Non-Target"])
+        balance_note = " ⚠️ Low trial count" if (target_count < 10 or nontarget_count < 10) else ""
         
-        # LOW DATA WARNING: Code B Logic
-        balance_note = ""
-        if target_count < 10 or nontarget_count < 10:
-            balance_note = " ⚠️ Low trial count detected"
+        # Updated text to show Rejection stats
+        footer_text = (
+            f'Total Clean Epochs: {len(epochs)} (Target: {target_count} | Non-Target: {nontarget_count}){balance_note} | '
+            f'Rejected: {dropped_epochs}/{total_events} ({drop_percentage:.1f}%) | Threshold: 100µV'
+        )
         
-        fig.text(0.5, 0.01, 
-                f'Total Epochs: {len(epochs)} | Target: {target_count} | Non-Target: {nontarget_count}{balance_note}', 
-                ha='center', fontsize=10, style='italic', color='#7f8c8d')
+        fig.text(0.5, 0.01, footer_text, ha='center', fontsize=10, style='italic', color='#7f8c8d')
 
-        # 7. CONVERT TO IMAGE
+        # --- 7. EXPORT ---
         buf = BytesIO()
-        # RESOLUTION: High (Code A)
-        plt.savefig(buf, format="png", bbox_inches='tight', dpi=300) 
+        plt.savefig(buf, format="png", bbox_inches='tight', dpi=150) 
         plt.close(fig)
         buf.seek(0)
         img_str = base64.b64encode(buf.read()).decode("utf-8")
@@ -258,25 +267,22 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
             "easiest": easiest_txt,
             "toughest": toughest_txt,
             "metadata": {
-                "total_epochs": len(epochs),
+                "total_events_found": total_events,
+                "clean_epochs_kept": len(epochs),
+                "rejected_epochs": dropped_epochs,
+                "drop_percentage": round(drop_percentage, 2),
                 "target_epochs": target_count,
                 "nontarget_epochs": nontarget_count,
-                "channels_analyzed": [sec["ch"] for sec in sections if sec["ch"] in raw.ch_names],
-                # TRIAL IMBALANCE: Ignored (Code A)
-                "artifact_rejection": "enabled"
+                "rejection_threshold": "100µV"
             }
         }
 
     except Exception as e:
-        # DEBUGGING: Advanced (Code B)
         import traceback
         error_details = traceback.format_exc()
-        print(f"ERROR: {error_details}") 
-        return {
-            "error": str(e),
-            "error_type": type(e).__name__,
-            "error_details": error_details
-        }
+        print(f"ERROR: {error_details}")
+        return {"error": str(e), "details": error_details}
+        
     finally:
         if 'tmp_cnt_path' in locals() and os.path.exists(tmp_cnt_path): 
             os.remove(tmp_cnt_path)
