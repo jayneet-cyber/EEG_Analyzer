@@ -99,8 +99,8 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
         event_ids = {'Target': 1, 'Non-Target': 2}
 
         # --- 5. FILTER & EPOCH ---
-        # n_jobs=1 is safer for small cloud instances (prevents memory crashes)
-        raw.filter(0.1, 30.0, picks='eeg', n_jobs=1, verbose=False) 
+        # UPDATED: Changed High-Pass from 0.1 to 0.5 Hz based on NotebookLM research
+        raw.filter(0.5, 30.0, picks='eeg', n_jobs=1, verbose=False) 
         
         # ARTIFACT REJECTION DICTIONARY
         reject_criteria = dict(eeg=100e-6)
@@ -161,8 +161,8 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
         sections = [
             {
                 "comp": "P100", "ch": "OZ", "color": "green", "window": (0.08, 0.14),
-                "title": "A. P100 (The 'First Glance' Test)",
-                "desc": "Measures how physically overwhelming the screen is—telling us if the sheer amount of clutter is tiring the user's eyes before they even start reading."
+                "title": "A. P100 (The 'Visual Impact' Test)", # UPDATED TITLE
+                "desc": "Measures how strongly the visual design grabs the brain's attention—telling us if the visual elements are striking enough to register immediately." # UPDATED DESC
             },
             {
                 "comp": "N200", "ch": "FZ", "color": "yellow", "window": (0.20, 0.30),
@@ -195,16 +195,10 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
             if channel in raw.ch_names:
                 ax_graph = fig.add_subplot(gs[graph_row])
                 
-                # Scale Data: Convert from Volts to Microvolts (x 1,000,000)
-                evoked_target_uv = evoked_target.copy()
-                evoked_target_uv.data *= 1e6 
-                
-                evoked_nontarget_uv = evoked_nontarget.copy()
-                evoked_nontarget_uv.data *= 1e6 
-                
-                # Plot Lines
+                # PLOT: Using MNE default scaling (Scientific Notation) as requested
+                # We pass the original objects (evoked_target, evoked_nontarget) directly
                 mne.viz.plot_compare_evokeds(
-                    {'Target': evoked_target_uv, 'Non-Target': evoked_nontarget_uv}, 
+                    {'Target': evoked_target, 'Non-Target': evoked_nontarget}, 
                     picks=channel, 
                     axes=ax_graph, 
                     show=False, 
@@ -212,9 +206,6 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
                     legend='upper right',
                     title=None
                 )
-                
-                # Remove scientific notation on Y-axis
-                ax_graph.ticklabel_format(style='plain', axis='y')
                 
                 # Highlight Time Window
                 ax_graph.axvspan(sec["window"][0], sec["window"][1], color=sec["color"], alpha=0.15, label=f'{sec["comp"]} Window')
@@ -227,7 +218,7 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
                 ax_graph.spines['top'].set_visible(False)
                 ax_graph.spines['right'].set_visible(False)
                 ax_graph.grid(True, linestyle=':', alpha=0.4)
-                ax_graph.set_ylabel("Amplitude (µV)", fontsize=12, weight='bold')
+                ax_graph.set_ylabel("Amplitude (V)", fontsize=12, weight='bold') # Default is Volts
                 ax_graph.set_xlabel("Time (s)", fontsize=12, weight='bold')
                 
                 # Add Label inside graph
@@ -236,12 +227,20 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
                               fontsize=11, weight='bold', 
                               verticalalignment='top', 
                               bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+                              
+                # SPECIAL FOOTNOTE FOR P300 (Section C)
+                if sec["comp"] == "P300":
+                    ax_graph.text(0.5, -0.25, 
+                                "* Research indicates that higher P300 latency directly correlates with slower task completion and lower user confidence.",
+                                transform=ax_graph.transAxes, 
+                                ha='center', fontsize=11, style='italic', color='#e74c3c')
+
             else:
                 ax_graph = fig.add_subplot(gs[graph_row])
                 ax_graph.text(0.5, 0.5, f'Channel {channel} not found', ha='center', fontsize=14, color='red')
                 ax_graph.axis('off')
 
-        # --- FOOTER METADATA (UPDATED) ---
+        # --- FOOTER METADATA ---
         target_count = len(epochs["Target"])
         nontarget_count = len(epochs["Non-Target"])
         balance_note = " ⚠️ Low trial count" if (target_count < 10 or nontarget_count < 10) else ""
@@ -249,7 +248,7 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
         # Updated text to show Rejection stats
         footer_text = (
             f'Total Clean Epochs: {len(epochs)} (Target: {target_count} | Non-Target: {nontarget_count}){balance_note} | '
-            f'Rejected: {dropped_epochs}/{total_events} ({drop_percentage:.1f}%) | Threshold: 100µV'
+            f'Rejected: {dropped_epochs}/{total_events} ({drop_percentage:.1f}%) | Threshold: 100µV | Filter: 0.5-30Hz'
         )
         
         fig.text(0.5, 0.01, footer_text, ha='center', fontsize=10, style='italic', color='#7f8c8d')
