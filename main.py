@@ -163,7 +163,7 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
             {
                 "comp": "P100", "ch": "OZ", "color": "green", "window": (0.08, 0.14),
                 "title": "A. P100 (The 'Visual Impact' Test)", 
-                "desc": "Measures how strongly the visual design grabs the brain's attention—telling us if the visual elements are striking enough to register immediately."
+                "desc": "Measures how physically overwhelming the screen is—telling us if the visual elements are striking enough to register immediately."
             },
             {
                 "comp": "N200", "ch": "FZ", "color": "yellow", "window": (0.20, 0.30),
@@ -224,24 +224,23 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
                 ax_graph.set_ylabel("Amplitude (V)", fontsize=12, weight='bold') # Default is Volts
                 ax_graph.set_xlabel("Time (s)", fontsize=12, weight='bold')
                 
-                # Add Label inside graph
+                # Add Label inside graph (UPDATED: Not bold, standard black)
                 ax_graph.text(0.02, 0.98, f'{sec["comp"]} @ {channel}', 
                               transform=ax_graph.transAxes, 
-                              fontsize=11, weight='bold', 
+                              fontsize=11, 
                               verticalalignment='top', 
                               bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
                               
                 # --- SPECIAL LOGIC FOR P300 SCORE ---
                 if sec["comp"] == "P300":
-                    # 1. Get Data for Target condition (Index 0 usually matches first dict entry, but safer to get by name if possible)
-                    # evoked_target.data is (n_channels, n_times)
-                    # We need the specific channel index
+                    # 1. Get Data for Target condition
                     ch_idx = evoked_target.ch_names.index(channel)
                     data = evoked_target.data[ch_idx, :]
                     times = evoked_target.times
                     
-                    # 2. Find Peak in P300 Window (300ms - 500ms)
-                    mask = (times >= 0.3) & (times <= 0.5)
+                    # 2. Find Peak in WIDENED P300 Window (250ms - 600ms)
+                    mask = (times >= 0.25) & (times <= 0.6)
+                    
                     if np.any(mask):
                         window_data = data[mask]
                         window_times = times[mask]
@@ -250,24 +249,23 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
                         peak_idx = np.argmax(window_data)
                         peak_latency_ms = window_times[peak_idx] * 1000
                         
-                        # 3. Calculate Score (Linear mapping: 300ms=100%, 600ms=0%)
-                        # Formula: Score = 100 - ((Lat - 300) / 300 * 100)
-                        # Clamped between 0 and 100
-                        raw_score = 100 - ((peak_latency_ms - 300) / (600 - 300) * 100)
+                        # 3. Calculate Score (Adjusted Range)
+                        min_lat = 250
+                        max_lat = 600
+                        raw_score = 100 - ((peak_latency_ms - min_lat) / (max_lat - min_lat) * 100)
                         score = max(0, min(100, raw_score))
-                        
                         p300_score_txt = f"{score:.0f}%"
                         
-                        # 4. Add Score Box to Graph
+                        # 4. Add Score Box to Graph (UPDATED: Black text, not bold, neutral box)
                         score_text = (
                             f"P300 Latency: {peak_latency_ms:.0f} ms\n"
                             f"Neural Confidence Score: {p300_score_txt}"
                         )
                         ax_graph.text(0.98, 0.05, score_text, 
                                     transform=ax_graph.transAxes, 
-                                    ha='right', va='bottom', fontsize=11, weight='bold',
-                                    color='red',
-                                    bbox=dict(boxstyle='round,pad=0.5', fc='#fff5f5', ec='red', alpha=0.9))
+                                    ha='right', va='bottom', fontsize=11,
+                                    color='black',
+                                    bbox=dict(boxstyle='round,pad=0.5', fc='white', ec='black', alpha=0.9))
 
                     # Add Research Footnote
                     ax_graph.text(0.5, -0.25, 
