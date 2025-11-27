@@ -1,4 +1,5 @@
 import matplotlib
+# OPTIMIZATION: Agg backend prevents "GUI not found" errors on cloud servers
 matplotlib.use('Agg')
 
 import uvicorn
@@ -25,7 +26,7 @@ CONFIG = {
     'filter': {
         'low': 0.5,
         'high': 30.0,
-        'n_jobs': 1  # Safer for cloud instances
+        'n_jobs': 1
     },
     'epoch': {
         'tmin': -0.2,
@@ -33,11 +34,11 @@ CONFIG = {
         'baseline': (None, 0)
     },
     'rejection': {
-        'eeg': 100e-6  # 100 microvolts
+        'eeg': 100e-6
     },
     'p300': {
         'search_window': (0.25, 0.6),
-        'score_range': (250, 600),  # milliseconds
+        'score_range': (250, 600),
         'window_duration': 0.2,
         'peak_prominence': 0.5e-6
     },
@@ -56,7 +57,6 @@ CONFIG = {
     }
 }
 
-# Analysis section definitions
 ANALYSIS_SECTIONS = [
     {
         "comp": "P100",
@@ -127,11 +127,7 @@ def save_upload_to_temp(upload_file: UploadFile, suffix: str) -> str:
 def parse_experiment_file(exp_path: str):
     """
     Parse the .exp file to extract trial mappings and reaction times.
-    
-    Returns:
-        tuple: (trial_type_map, reaction_times)
-            - trial_type_map: dict mapping BOTH trial IDs and Trigger Codes to types
-            - reaction_times: list of (latency_ms, trial_id, trial_name) tuples
+    FIXED: Robustly maps Trial ID and Trigger Code to condition.
     """
     trial_type_map = {}
     reaction_times = []
@@ -139,35 +135,38 @@ def parse_experiment_file(exp_path: str):
     with open(exp_path, 'r') as f:
         lines = f.readlines()
         
-        for line in lines[8:]:  # Skip header lines
+        for line in lines[8:]: # Skip headers
             parts = line.strip().split('\t')
             if len(parts) < 7:
                 parts = line.strip().split()
             
             if len(parts) >= 7:
-                # Column indices based on your file format
-                trial_id = parts[0].strip()      # '1'
-                trial_name = parts[1].strip()    # 'Underwater Photography'
-                trial_type = parts[3].strip()    # 'R' or 'C'
+                # Column 0: Trial ID (e.g., '1')
+                trial_id = parts[0].strip()
+                # Column 1: Trial Name
+                trial_name = parts[1].strip()
+                # Column 3: Type (R=Target, C=Non-Target, M/P=Misc)
+                trial_type = parts[3].strip()
                 
-                # Column 5 contains the TRIGGER CODE (e.g. '12001')
+                # Column 5: Trigger Code (e.g., '12001') - CRUCIAL for MNE matching
                 try:
                     trigger_code = parts[5].strip()
                 except:
                     trigger_code = None
 
-                # Column 6 contains LATENCY
+                # Column 6: Latency
                 try:
                     latency = int(parts[6].strip())
                 except:
                     latency = 1000
                 
-                # --- KEY FIX: Map BOTH the ID and the Trigger Code ---
+                # --- FIX: Map BOTH ID AND TRIGGER CODE ---
                 # This ensures we catch the event whether EEG calls it '1' or '12001'
                 trial_type_map[trial_id] = trial_type
                 if trigger_code:
                     trial_type_map[trigger_code] = trial_type
                 
+                # Only log reaction times for identified targets with a button press
                 if trial_type == 'R' and latency < 1000:
                     reaction_times.append((latency, trial_id, trial_name))
     
@@ -191,22 +190,24 @@ def calculate_task_extremes(reaction_times):
 def map_events_to_codes(raw, trial_type_map):
     """
     Map raw annotations to event codes based on trial type.
-    Includes robust string cleaning.
+    Includes cleaning of description strings.
     """
     new_events_list = []
     found_descriptions = set()
     
     for annot in raw.annotations:
-        # Clean up description (e.g. remove "Stimulus")
+        # Clean description (remove 'Stimulus', 'boundary', etc.)
         raw_desc = str(annot['description'])
         clean_id = raw_desc.replace('Stimulus', '').strip()
         found_descriptions.add(clean_id)
         
+        # Check if the cleaned EEG event ID matches anything in our map
         trial_type = trial_type_map.get(clean_id, "Unknown")
         
         if trial_type == "Unknown":
             continue
         
+        # Assign MNE code: 1=Target (R), 2=Non-Target (C/M/P)
         code = 1 if trial_type == 'R' else 2
         event_sample = raw.time_as_index(annot['onset'])[0]
         new_events_list.append([event_sample, 0, code])
@@ -326,12 +327,12 @@ def plot_erp_comparison(ax, evoked_target, evoked_nontarget, section: dict,
         axes=ax, 
         show=False, 
         show_sensors=False, 
-        legend=False,  # We'll add custom legend
+        legend=False,
         title=None
     )
     
-    # Add custom legend with transparency
-    ax.legend(loc='upper left', framealpha=0.8, fontsize=10)
+    # Add custom legend with transparency (MOVED TO TOP RIGHT)
+    ax.legend(loc='upper right', framealpha=0.8, fontsize=10)
     
     # Highlight analysis window
     ax.axvspan(highlight_window[0], highlight_window[1], 
@@ -347,10 +348,11 @@ def plot_erp_comparison(ax, evoked_target, evoked_nontarget, section: dict,
     ax.grid(True, linestyle=':', alpha=0.4, which='both')
     ax.minorticks_on()
     
-    # Convert y-axis to microvolts
-    ax.ticklabel_format(style='plain', axis='y')
+    # Convert y-axis to microvolts and format as integers
+    # ax.ticklabel_format(style='plain', axis='y')  <-- REMOVED
     y_ticks = ax.get_yticks()
-    ax.set_yticklabels([f'{val*1e6:.1f}' for val in y_ticks])
+    # NEW FORMATTING: Convert to integer microvolts (e.g., 10, 20)
+    ax.set_yticklabels([f'{int(val*1e6)}' for val in y_ticks])
     
     ax.set_ylabel("Amplitude (µV)", fontsize=12, weight='bold')
     ax.set_xlabel("Time (s)", fontsize=12, weight='bold')
@@ -459,6 +461,8 @@ def create_report_figure(evoked_target, evoked_nontarget, sections,
     
     # Footer metadata
     stats = rejection_stats
+    balance_note = " ⚠️ Low trial count" if (len(evoked_target.nave) < 10 or len(evoked_nontarget.nave) < 10) else ""
+    
     footer_line1 = (
         f'Clean Epochs: {stats["good_epochs"]} '
         f'(Target: {len(evoked_target.nave)} | Non-Target: {len(evoked_nontarget.nave)})'
@@ -505,14 +509,18 @@ def read_root():
 
 
 @app.post("/analyze")
-def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(...)):
-    """Analyze EEG data and generate Neuro-UX report."""
+async def analyze_eeg(
+    cnt_file: UploadFile = File(...), 
+    exp_file: UploadFile = File(...)
+):
+    """
+    Analyze EEG data and generate Neuro-UX report.
+    
+    Accepts .cnt (EEG data) and .exp (experiment log) files.
+    Returns base64-encoded visualization and metadata.
+    """
     tmp_cnt_path = None
     tmp_exp_path = None
-    raw = None
-    epochs = None
-    evoked_target = None
-    evoked_nontarget = None
     
     try:
         # Validate inputs
@@ -538,6 +546,9 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
         # Map events to codes
         custom_events, event_ids = map_events_to_codes(raw, trial_type_map)
         
+        if custom_events is None:
+            raise HTTPException(status_code=400, detail="No matching events found in .exp file")
+
         # Apply bandpass filter
         raw.filter(
             CONFIG['filter']['low'], 
@@ -566,11 +577,19 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
         
         # Check if any epochs survived
         if len(epochs) == 0:
-            return {"error": "All trials were rejected due to artifacts (too much noise)."}
+            raise HTTPException(
+                status_code=400,
+                detail="All trials were rejected due to artifacts (signal too noisy)."
+            )
         
         # Check trial balance
         target_count = len(epochs['Target'])
         nontarget_count = len(epochs['Non-Target'])
+        balance_note = ""
+        
+        if (target_count < CONFIG['thresholds']['min_trial_count'] or 
+            nontarget_count < CONFIG['thresholds']['min_trial_count']):
+            balance_note = " ⚠️ Low trial count"
         
         if (target_count < CONFIG['thresholds']['low_trial_warning'] or 
             nontarget_count < CONFIG['thresholds']['low_trial_warning']):
@@ -586,7 +605,7 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
             evoked_nontarget, 
             ANALYSIS_SECTIONS,
             rejection_stats,
-            balance_note=""
+            balance_note
         )
         
         # Clean up resources
