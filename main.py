@@ -291,7 +291,7 @@ def plot_erp_comparison(ax, evoked_target, evoked_nontarget, section: dict,
         axes=ax, 
         show=False, 
         show_sensors=False, 
-        legend='upper left',
+        legend='upper right',
         title=None
     )
     
