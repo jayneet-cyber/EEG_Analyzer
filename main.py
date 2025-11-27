@@ -295,25 +295,44 @@ def plot_erp_comparison(ax, evoked_target, evoked_nontarget, section: dict,
         title=None
     )
     
+    # Get the line data to convert to microvolts
+    lines = ax.get_lines()
+    for line in lines:
+        ydata = line.get_ydata()
+        line.set_ydata(ydata * 1e6)  # Convert from volts to microvolts
+    
     # Highlight analysis window
     ax.axvspan(highlight_window[0], highlight_window[1], 
                color=section['color'], alpha=0.15, 
                label=f'{section["comp"]} Window')
     
-    # Styling
+    # Styling with square aspect ratio
     ax.set_xlim(-0.2, 0.6)
     ax.set_xticks(np.arange(-0.2, 0.7, 0.1))
+    
+    # Set y-axis limits and ticks for clean microvolts display
+    ax.relim()
+    ax.autoscale_view()
+    current_ylim = ax.get_ylim()
+    y_range = max(abs(current_ylim[0]), abs(current_ylim[1]))
+    y_max = np.ceil(y_range / 10) * 10  # Round to nearest 10
+    ax.set_ylim(-y_max, y_max)
+    ax.set_yticks(np.arange(-y_max, y_max + 10, 10))
+    
+    # Make grid square
+    ax.set_aspect('auto')
+    
     ax.axhline(0, color='black', linewidth=0.5, linestyle='--', alpha=0.3)
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
-    ax.grid(True, linestyle=':', alpha=0.4, which='both')
+    ax.grid(True, linestyle=':', alpha=0.4, which='major')
     ax.minorticks_on()
+    ax.grid(True, linestyle=':', alpha=0.2, which='minor')
     
-    # Convert y-axis to microvolts
-    ax.ticklabel_format(style='plain', axis='y')
-    y_ticks = ax.get_yticks()
-    ax.set_yticklabels([f'{val*1e6:.1f}' for val in y_ticks])
+    # No scientific notation, plain numbers
+    ax.ticklabel_format(style='plain', axis='y', useOffset=False)
     
+    # Label with microvolts
     ax.set_ylabel("Amplitude (µV)", fontsize=12, weight='bold')
     ax.set_xlabel("Time (s)", fontsize=12, weight='bold')
     
@@ -432,8 +451,8 @@ def create_report_figure(evoked_target, evoked_nontarget, sections,
         f'Filter: {CONFIG["filter"]["low"]}-{CONFIG["filter"]["high"]}Hz'
     )
     
-    fig.text(0.5, 0.02, footer_line1, ha='center', fontsize=10, color='#7f8c8d')
-    fig.text(0.5, 0.005, footer_line2, ha='center', fontsize=9, 
+    fig.text(0.5, 0.025, footer_line1, ha='center', fontsize=10, color='#7f8c8d')
+    fig.text(0.5, 0.008, footer_line2, ha='center', fontsize=9, 
              style='italic', color='#95a5a6')
     
     # Export to base64
