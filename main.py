@@ -1,7 +1,3 @@
-import matplotlib
-# OPTIMIZATION: Agg backend prevents "GUI not found" errors on cloud servers
-matplotlib.use('Agg')
-
 import uvicorn
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,6 +11,9 @@ import base64
 import textwrap
 from io import BytesIO
 import shutil
+import matplotlib
+# OPTIMIZATION: Agg backend prevents "GUI not found" errors on cloud servers
+matplotlib.use('Agg')
 
 app = FastAPI()
 
