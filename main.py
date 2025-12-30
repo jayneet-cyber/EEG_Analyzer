@@ -326,12 +326,19 @@ def plot_erp_comparison(ax, evoked_target, evoked_nontarget, section: dict,
     ax.grid(True, linestyle=':', alpha=0.4, which='both')
     ax.minorticks_on()
     
-    # Convert y-axis to microvolts for readability
+    # FIX: Ensure Y-axis is formatted as simple integers (representing microvolts)
     ax.ticklabel_format(style='plain', axis='y')
     y_ticks = ax.get_yticks()
+    # If MNE scaled to uV, values are ~10. If not, ~0.00001.
+    # We check magnitude. If small (< 1), assuming Volts -> Convert. 
+    # If large (> 1), assuming uV -> Just format.
     
-    # Clean integer scaling: Converts small float volts (0.00001) -> integer microvolts (10)
-    ax.set_yticklabels([f'{int(val*1e6)}' for val in y_ticks])
+    if len(y_ticks) > 0 and abs(y_ticks[-1]) < 0.1:
+        # Values are likely in Volts, convert to uV for display
+        ax.set_yticklabels([f'{int(val*1e6)}' for val in y_ticks])
+    else:
+        # Values are likely already uV, just format as int
+        ax.set_yticklabels([f'{int(val)}' for val in y_ticks])
     
     ax.set_ylabel("Amplitude (µV)", fontsize=12, weight='bold')
     ax.set_xlabel("Time (s)", fontsize=12, weight='bold')
@@ -342,7 +349,7 @@ def plot_erp_comparison(ax, evoked_target, evoked_nontarget, section: dict,
             verticalalignment='top',
             bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
     
-    # Add P300 score box
+    # Add P300 score box if provided
     if p300_info and section['comp'] == 'P300':
         score_text = (
             f"P300 Latency: {p300_info['latency_ms']:.0f} ms\n"
