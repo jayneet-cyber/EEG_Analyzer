@@ -63,7 +63,7 @@ ANALYSIS_SECTIONS = [
         "color": "green",
         "window": (0.08, 0.14),
         "bg_color": "#f0f8ff",
-        "title": "A. P100 (The 'First Glance' Test)", 
+        "title": "A. P100 (The 'First Glance' Test)",
         "desc": "This test measures the brain's immediate, subconscious reaction to seeing the screen. It tells us if the visual elements are striking enough to instantaneously grab the brain's attention—much like the primary visual cortex's swift response to early attention tasks—to ensure the design registers immediately."
     },
     {
@@ -94,7 +94,7 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], 
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -147,25 +147,22 @@ def parse_experiment_file(exp_path: str):
                 # Column 3: Type (R=Target, C=Non-Target, M/P=Misc)
                 trial_type = parts[3].strip()
                 
-                # Column 5: Trigger Code (e.g., '12001') - CRUCIAL for MNE matching
-                try:
-                    trigger_code = parts[5].strip()
-                except:
-                    trigger_code = None
-
-                # Column 6: Latency
                 try:
                     latency = int(parts[6].strip())
                 except:
                     latency = 1000
                 
-                # --- FIX: Map BOTH ID AND TRIGGER CODE ---
-                # This ensures we catch the event whether EEG calls it '1' or '12001'
+                # Map trial ID (e.g., "0", "1", "2")
                 trial_type_map[trial_id] = trial_type
-                if trigger_code:
-                    trial_type_map[trigger_code] = trial_type
                 
-                # Only log reaction times for identified targets with a button press
+                # CRITICAL FIX: Also map trigger code (column 5, e.g., "12001", "12502")
+                # EEG files often use these codes instead of trial IDs
+                try:
+                    trigger_code = parts[5].strip()
+                    trial_type_map[trigger_code] = trial_type
+                except:
+                    pass
+                
                 if trial_type == 'R' and latency < 1000:
                     reaction_times.append((latency, trial_id, trial_name))
     
@@ -189,38 +186,43 @@ def calculate_task_extremes(reaction_times):
 def map_events_to_codes(raw, trial_type_map):
     """
     Map raw annotations to event codes based on trial type.
-    Includes robust string cleaning.
+    FIXED: Improved error messages with debug information.
     """
     new_events_list = []
     found_descriptions = set()
     
     for annot in raw.annotations:
-        # Clean up description (e.g. remove "Stimulus", "boundary", etc.)
         raw_desc = str(annot['description'])
-        clean_id = raw_desc.replace('Stimulus', '').strip()
+        # Handle both "Stimulus/12001" and "12001" formats
+        clean_id = raw_desc.replace('Stimulus/', '').replace('Stimulus', '').strip()
         found_descriptions.add(clean_id)
         
-        # Check if the cleaned EEG event ID matches anything in our map
         trial_type = trial_type_map.get(clean_id, "Unknown")
         
         if trial_type == "Unknown":
             continue
         
-        # Assign MNE code: 1=Target (R), 2=Non-Target (C/M/P)
         code = 1 if trial_type == 'R' else 2
         event_sample = raw.time_as_index(annot['onset'])[0]
         new_events_list.append([event_sample, 0, code])
     
     if not new_events_list:
-        # Generate helpful error message if no matches found
+        # Provide helpful debug information
         sample_eeg = list(found_descriptions)[:5]
-        sample_map = list(trial_type_map.keys())[:5]
-        print(f"DEBUG ERROR: EEG events found: {sample_eeg}")
-        print(f"DEBUG ERROR: Map keys expected: {sample_map}")
+        sample_map = list(trial_type_map.keys())[:10]
+        error_msg = (
+            f"No matching events found between EEG and experiment file.\n"
+            f"EEG annotations found: {sample_eeg}\n"
+            f"Expected mappings from .exp file: {sample_map}...\n"
+            f"Check if trigger codes match between files."
+        )
+        print(f"ERROR: {error_msg}")
         return None, None
     
     custom_events = np.array(new_events_list)
     event_ids = {'Target': 1, 'Non-Target': 2}
+    
+    print(f"SUCCESS: Mapped {len(new_events_list)} events (Target: {sum(custom_events[:, 2] == 1)}, Non-Target: {sum(custom_events[:, 2] == 2)})")
     
     return custom_events, event_ids
 
@@ -257,10 +259,10 @@ def detect_p300_peak(evoked_target, channel: str):
     window_data = data[mask]
     window_times = times[mask]
     
-    # Try to find peaks with minimum prominence to avoid noise
+    # Try to find peaks with prominence to avoid noise
     try:
         peaks, properties = find_peaks(
-            window_data, 
+            window_data,
             prominence=CONFIG['p300']['peak_prominence']
         )
         
@@ -291,12 +293,12 @@ def create_header_section(ax, title: str, summary: str):
     """Render the report header with title and description."""
     ax.axis('off')
     
-    ax.text(0.5, 0.85, title, 
+    ax.text(0.5, 0.85, title,
             ha='center', fontsize=26, weight='bold', color='#2c3e50')
     
     wrapped_summary = textwrap.fill(summary, width=CONFIG['text']['title_wrap'])
-    ax.text(0.5, 0.35, wrapped_summary, 
-            ha='center', va='top', fontsize=13, style='italic', 
+    ax.text(0.5, 0.35, wrapped_summary,
+            ha='center', va='top', fontsize=13, style='italic',
             color='#34495e', linespacing=1.5)
 
 
@@ -305,15 +307,15 @@ def create_section_text(ax, section: dict):
     ax.axis('off')
     ax.set_facecolor(section['bg_color'])
     
-    ax.text(0.5, 0.75, section['title'], 
+    ax.text(0.5, 0.75, section['title'],
             ha='center', fontsize=20, weight='bold', color='#2c3e50')
     
     wrapped_desc = textwrap.fill(section['desc'], width=CONFIG['text']['desc_wrap'])
-    ax.text(0.5, 0.25, wrapped_desc, 
+    ax.text(0.5, 0.25, wrapped_desc,
             ha='center', va='top', fontsize=14, color='#7f8c8d')
 
 
-def plot_erp_comparison(ax, evoked_target, evoked_nontarget, section: dict, 
+def plot_erp_comparison(ax, evoked_target, evoked_nontarget, section: dict,
                         highlight_window: tuple, p300_info: dict = None):
     """Plot ERP comparison with highlighting and optional P300 scoring."""
     channel = section['ch']
@@ -333,8 +335,8 @@ def plot_erp_comparison(ax, evoked_target, evoked_nontarget, section: dict,
     ax.legend(loc='upper right', framealpha=0.8, fontsize=10)
     
     # Highlight analysis window
-    ax.axvspan(highlight_window[0], highlight_window[1], 
-               color=section['color'], alpha=0.15, 
+    ax.axvspan(highlight_window[0], highlight_window[1],
+               color=section['color'], alpha=0.15,
                label=f'{section["comp"]} Window')
     
     # Styling
@@ -346,7 +348,7 @@ def plot_erp_comparison(ax, evoked_target, evoked_nontarget, section: dict,
     ax.grid(True, linestyle=':', alpha=0.4, which='both')
     ax.minorticks_on()
     
-    # Convert y-axis to microvolts for readability
+    # CHANGE 3: Y-axis already in microvolts, just format as clean integers
     ax.ticklabel_format(style='plain', axis='y')
     y_ticks = ax.get_yticks()
     ax.set_yticklabels([f'{val*1e6:.1f}' for val in y_ticks])
@@ -360,17 +362,17 @@ def plot_erp_comparison(ax, evoked_target, evoked_nontarget, section: dict,
             verticalalignment='top',
             bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
     
-    # Add P300 score box
+    # Add P300 score box if provided
     if p300_info and section['comp'] == 'P300':
         score_text = (
             f"P300 Latency: {p300_info['latency_ms']:.0f} ms\n"
             f"Neural Confidence Score: {p300_info['score']:.0f}%"
         )
-        ax.text(0.98, 0.05, score_text, 
-                transform=ax.transAxes, ha='right', va='bottom', 
+        ax.text(0.98, 0.05, score_text,
+                transform=ax.transAxes, ha='right', va='bottom',
                 fontsize=11, color='black',
-                bbox=dict(boxstyle='round,pad=0.5', fc='white', 
-                          ec='black', alpha=0.9))
+                bbox=dict(boxstyle='round,pad=0.5', fc='white',
+                         ec='black', alpha=0.9))
         
         # Add research footnote
         footnote = (
@@ -381,19 +383,19 @@ def plot_erp_comparison(ax, evoked_target, evoked_nontarget, section: dict,
             "cognitive pursuit."
         )
         ax.text(0.5, -0.32, footnote,
-                transform=ax.transAxes, ha='center', fontsize=10, 
+                transform=ax.transAxes, ha='center', fontsize=10,
                 style='italic', color='#e74c3c', wrap=True,
                 bbox=dict(boxstyle='round,pad=0.7', fc='#fff5f5', alpha=0.8))
 
 
-def create_report_figure(evoked_target, evoked_nontarget, sections, 
-                         rejection_stats, balance_note):
+def create_report_figure(evoked_target, evoked_nontarget, sections,
+                         rejection_stats, target_count, nontarget_count):
     """Generate complete visualization report with all sections."""
     fig = plt.figure(figsize=CONFIG['figure']['size'])
     
     gs = gridspec.GridSpec(
-        7, 1, 
-        height_ratios=[1.2, 1.0, 2.5, 1.0, 2.5, 1.0, 2.5], 
+        7, 1,
+        height_ratios=[1.2, 1.0, 2.5, 1.0, 2.5, 1.0, 2.5],
         hspace=CONFIG['figure']['hspace']
     )
     
@@ -437,23 +439,21 @@ def create_report_figure(evoked_target, evoked_nontarget, sections,
                 p300_peak_time = detect_p300_peak(evoked_target, channel)
                 
                 if p300_peak_time is not None:
-                    # Adjust window to start at peak
                     highlight_window = (
-                        p300_peak_time, 
+                        p300_peak_time,
                         p300_peak_time + CONFIG['p300']['window_duration']
                     )
                     
-                    # Calculate score
                     score, latency_ms = calculate_p300_score(p300_peak_time)
                     p300_score_txt = f"{score:.0f}%"
                     p300_info = {'score': score, 'latency_ms': latency_ms}
             
-            plot_erp_comparison(ax_graph, evoked_target, evoked_nontarget, 
+            plot_erp_comparison(ax_graph, evoked_target, evoked_nontarget,
                               section, highlight_window, p300_info)
         else:
             ax_graph = fig.add_subplot(gs[graph_row])
-            ax_graph.text(0.5, 0.5, f'Channel {channel} not found', 
-                          ha='center', fontsize=14, color='red')
+            ax_graph.text(0.5, 0.5, f'Channel {channel} not found',
+                         ha='center', fontsize=14, color='red')
             ax_graph.axis('off')
     
     # Footer metadata
@@ -473,12 +473,12 @@ def create_report_figure(evoked_target, evoked_nontarget, sections,
     )
     
     fig.text(0.5, 0.02, footer_line1, ha='center', fontsize=10, color='#7f8c8d')
-    fig.text(0.5, 0.005, footer_line2, ha='center', fontsize=9, 
+    fig.text(0.5, 0.005, footer_line2, ha='center', fontsize=9,
              style='italic', color='#95a5a6')
     
     # Export to base64
     buf = BytesIO()
-    plt.savefig(buf, format="png", bbox_inches='tight', 
+    plt.savefig(buf, format="png", bbox_inches='tight',
                 dpi=CONFIG['figure']['dpi'])
     plt.close(fig)
     buf.seek(0)
@@ -528,7 +528,7 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
             raw = mne.io.read_raw_cnt(tmp_cnt_path, preload=True, verbose=False)
         except Exception as e:
             raise HTTPException(
-                status_code=400, 
+                status_code=400,
                 detail=f"Failed to load .cnt file: {str(e)}"
             )
         
@@ -540,28 +540,28 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
         custom_events, event_ids = map_events_to_codes(raw, trial_type_map)
         
         if custom_events is None:
-            raise HTTPException(status_code=400, detail="No matching events found in .exp file. Check server logs for details.")
-
+            return {"error": "No matching events found in .exp file. Check server logs for details."}
+        
         # Apply bandpass filter
         raw.filter(
-            CONFIG['filter']['low'], 
-            CONFIG['filter']['high'], 
-            picks='eeg', 
-            n_jobs=CONFIG['filter']['n_jobs'], 
+            CONFIG['filter']['low'],
+            CONFIG['filter']['high'],
+            picks='eeg',
+            n_jobs=CONFIG['filter']['n_jobs'],
             verbose=False
         )
         
         # Create epochs with artifact rejection
         epochs = mne.Epochs(
-            raw, 
-            custom_events, 
-            event_ids, 
-            tmin=CONFIG['epoch']['tmin'], 
-            tmax=CONFIG['epoch']['tmax'], 
-            baseline=CONFIG['epoch']['baseline'], 
-            picks='eeg', 
+            raw,
+            custom_events,
+            event_ids,
+            tmin=CONFIG['epoch']['tmin'],
+            tmax=CONFIG['epoch']['tmax'],
+            baseline=CONFIG['epoch']['baseline'],
+            picks='eeg',
             reject=CONFIG['rejection'],
-            preload=True, 
+            preload=True,
             verbose=False
         )
         
@@ -576,13 +576,9 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
         target_count = len(epochs['Target'])
         nontarget_count = len(epochs['Non-Target'])
         
-        if (target_count < CONFIG['thresholds']['min_trial_count'] or 
-            nontarget_count < CONFIG['thresholds']['min_trial_count']):
-            balance_note = " ⚠️ Low trial count"
-        
-        if (target_count < CONFIG['thresholds']['low_trial_warning'] or 
+        if (target_count < CONFIG['thresholds']['low_trial_warning'] or
             nontarget_count < CONFIG['thresholds']['low_trial_warning']):
-            print(f"WARNING: Low trial count may affect reliability")
+            print(f"WARNING: Low trial count (Target: {target_count}, Non-Target: {nontarget_count}) may affect reliability")
         
         # Average epochs to get ERPs
         evoked_target = epochs['Target'].average()
@@ -590,18 +586,19 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
         
         # Generate report figure
         img_str, p300_score_txt = create_report_figure(
-            evoked_target, 
-            evoked_nontarget, 
+            evoked_target,
+            evoked_nontarget,
             ANALYSIS_SECTIONS,
             rejection_stats,
-            balance_note
+            target_count,
+            nontarget_count
         )
         
         # Clean up resources
         cleanup_resources(raw, epochs, evoked_target, evoked_nontarget)
         
         return {
-            "status": "success", 
+            "status": "success",
             "image": img_str,
             "easiest": easiest_txt,
             "toughest": toughest_txt,
@@ -613,8 +610,8 @@ def analyze_eeg(cnt_file: UploadFile = File(...), exp_file: UploadFile = File(..
                 "drop_percentage": round(rejection_stats['drop_percentage'], 2),
                 "target_epochs": target_count,
                 "nontarget_epochs": nontarget_count,
-                "rejection_threshold_uv": CONFIG['rejection']['eeg'] * 1e6,
-                "filter_range_hz": f"{CONFIG['filter']['low']}-{CONFIG['filter']['high']}"
+                "rejection_threshold": f"{CONFIG['rejection']['eeg']*1e6:.0f}µV",
+                "filter_range": f"{CONFIG['filter']['low']}-{CONFIG['filter']['high']}Hz"
             }
         }
     
