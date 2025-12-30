@@ -6,7 +6,7 @@ from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import mne
 import matplotlib.pyplot as plt
-import matplotlib.gridspec as gridspec 
+import matplotlib.gridspec as gridspec
 import numpy as np
 from scipy.signal import find_peaks
 import tempfile
@@ -134,17 +134,14 @@ def parse_experiment_file(exp_path: str):
     with open(exp_path, 'r') as f:
         lines = f.readlines()
         
-        for line in lines[8:]: # Skip header lines
+        for line in lines[8:]:
             parts = line.strip().split('\t')
             if len(parts) < 7:
                 parts = line.strip().split()
             
             if len(parts) >= 7:
-                # Column 0: Trial ID (e.g., '1')
                 trial_id = parts[0].strip()
-                # Column 1: Trial Name
                 trial_name = parts[1].strip()
-                # Column 3: Type (R=Target, C=Non-Target, M/P=Misc)
                 trial_type = parts[3].strip()
                 
                 try:
@@ -320,19 +317,23 @@ def plot_erp_comparison(ax, evoked_target, evoked_nontarget, section: dict,
     """Plot ERP comparison with highlighting and optional P300 scoring."""
     channel = section['ch']
     
-    # Plot ERPs
+    # CRITICAL FIX: Scale data to microvolts BEFORE plotting
+    evoked_target_uv = evoked_target.copy()
+    evoked_target_uv.data *= 1e6  # Convert volts to microvolts
+    
+    evoked_nontarget_uv = evoked_nontarget.copy()
+    evoked_nontarget_uv.data *= 1e6  # Convert volts to microvolts
+    
+    # Plot ERPs with scaled data
     mne.viz.plot_compare_evokeds(
-        {'Target': evoked_target, 'Non-Target': evoked_nontarget}, 
-        picks=channel, 
-        axes=ax, 
-        show=False, 
-        show_sensors=False, 
-        legend=False,
+        {'Target': evoked_target_uv, 'Non-Target': evoked_nontarget_uv},
+        picks=channel,
+        axes=ax,
+        show=False,
+        show_sensors=False,
+        legend='upper right',  # CHANGE 1: Moved to upper right corner
         title=None
     )
-    
-    # Custom Legend
-    ax.legend(loc='upper right', framealpha=0.8, fontsize=10)
     
     # Highlight analysis window
     ax.axvspan(highlight_window[0], highlight_window[1],
@@ -345,20 +346,20 @@ def plot_erp_comparison(ax, evoked_target, evoked_nontarget, section: dict,
     ax.axhline(0, color='black', linewidth=0.5, linestyle='--', alpha=0.3)
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
-    ax.grid(True, linestyle=':', alpha=0.4, which='both')
+    ax.grid(False)  # CHANGE 2: Removed grid lines
     ax.minorticks_on()
     
     # CHANGE 3: Y-axis already in microvolts, just format as clean integers
     ax.ticklabel_format(style='plain', axis='y')
     y_ticks = ax.get_yticks()
-    ax.set_yticklabels([f'{val*1e6:.1f}' for val in y_ticks])
+    ax.set_yticklabels([f'{int(val)}' for val in y_ticks])  # Simple integer labels
     
     ax.set_ylabel("Amplitude (µV)", fontsize=12, weight='bold')
     ax.set_xlabel("Time (s)", fontsize=12, weight='bold')
     
     # Add component label
-    ax.text(0.02, 0.98, f'{section["comp"]} @ {channel}', 
-            transform=ax.transAxes, fontsize=11, 
+    ax.text(0.02, 0.98, f'{section["comp"]} @ {channel}',
+            transform=ax.transAxes, fontsize=11,
             verticalalignment='top',
             bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
     
@@ -401,7 +402,7 @@ def create_report_figure(evoked_target, evoked_nontarget, sections,
     
     # Header
     ax_header = fig.add_subplot(gs[0])
-    main_title = "Neuro-UX Analyzer"
+    main_title = "Neuro-UX: B2B Dashboard Analysis"
     summary_text = (
         "We analyze your business dashboard versions (Current vs. New) by showing them to users "
         "while they complete common management tasks, like \"Spot the revenue drop.\" Using an "
@@ -456,18 +457,17 @@ def create_report_figure(evoked_target, evoked_nontarget, sections,
                          ha='center', fontsize=14, color='red')
             ax_graph.axis('off')
     
-    # Footer metadata
-    stats = rejection_stats
-    balance_note = " ⚠️ Low trial count" if (len(evoked_target.nave) < 10 or len(evoked_nontarget.nave) < 10) else ""
+    # Footer metadata - FIXED: Use passed counts instead of nave
+    balance_note = " ⚠️ Low trial count" if (target_count < 10 or nontarget_count < 10) else ""
     
     footer_line1 = (
-        f'Clean Epochs: {stats["good_epochs"]} '
-        f'(Target: {len(evoked_target.nave)} | Non-Target: {len(evoked_nontarget.nave)})'
+        f'Clean Epochs: {rejection_stats["good_epochs"]} '
+        f'(Target: {target_count} | Non-Target: {nontarget_count})'
         f'{balance_note}'
     )
     footer_line2 = (
-        f'Rejected: {stats["dropped_epochs"]}/{stats["total_events"]} '
-        f'({stats["drop_percentage"]:.1f}%) | '
+        f'Rejected: {rejection_stats["dropped_epochs"]}/{rejection_stats["total_events"]} '
+        f'({rejection_stats["drop_percentage"]:.1f}%) | '
         f'Threshold: {CONFIG["rejection"]["eeg"]*1e6:.0f}µV | '
         f'Filter: {CONFIG["filter"]["low"]}-{CONFIG["filter"]["high"]}Hz'
     )
