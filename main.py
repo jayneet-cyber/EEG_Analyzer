@@ -349,23 +349,12 @@ def plot_erp_comparison(ax, evoked_target, evoked_nontarget, section: dict,
     ax.grid(False)  # CHANGE 2: Removed grid lines
     ax.minorticks_on()
     
-    # CHANGE 3: Force y-axis to show clean numbers
-    # Get current limits and recreate ticks
-    y_min, y_max = ax.get_ylim()
-    
-    # Create nice round tick positions
-    tick_step = (y_max - y_min) / 5  # About 5-6 ticks
-    nice_ticks = np.arange(
-        np.floor(y_min / tick_step) * tick_step,
-        np.ceil(y_max / tick_step) * tick_step + tick_step,
-        tick_step
-    )
-    
-    ax.set_yticks(nice_ticks)
-    ax.set_yticklabels([f'{int(val)}' for val in nice_ticks])
-    
-    # Ensure no scientific notation
+    # CHANGE 3: Simple fix - format y-axis as plain integers
     ax.ticklabel_format(style='plain', axis='y', useOffset=False)
+    
+    # Get the auto-generated ticks and just format them as integers
+    formatter = plt.FuncFormatter(lambda x, p: f'{int(x)}')
+    ax.yaxis.set_major_formatter(formatter)
     
     ax.set_ylabel("Amplitude (µV)", fontsize=12, weight='bold')
     ax.set_xlabel("Time (s)", fontsize=12, weight='bold')
