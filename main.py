@@ -324,7 +324,7 @@ def plot_erp_comparison(ax, evoked_target, evoked_nontarget, section: dict,
         axes=ax,
         show=False,
         show_sensors=False,
-        legend='upper left',
+        legend='upper right',  # CHANGE 1: Moved to upper right corner
         title=None
     )
     
@@ -339,13 +339,14 @@ def plot_erp_comparison(ax, evoked_target, evoked_nontarget, section: dict,
     ax.axhline(0, color='black', linewidth=0.5, linestyle='--', alpha=0.3)
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
-    ax.grid(True, linestyle=':', alpha=0.4, which='both')
+    ax.grid(False)  # CHANGE 2: Removed grid lines
     ax.minorticks_on()
     
-    # Convert y-axis to microvolts for readability
+    # CHANGE 3: Convert y-axis to microvolts with normal numbers
     ax.ticklabel_format(style='plain', axis='y')
     y_ticks = ax.get_yticks()
-    ax.set_yticklabels([f'{val*1e6:.1f}' for val in y_ticks])
+    # Convert to microvolts and format as integers
+    ax.set_yticklabels([f'{int(val*1e6)}' for val in y_ticks])
     
     ax.set_ylabel("Amplitude (µV)", fontsize=12, weight='bold')
     ax.set_xlabel("Time (s)", fontsize=12, weight='bold')
